@@ -16,6 +16,7 @@
 
 import re
 import io
+import os
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -45,8 +46,13 @@ DATA_SOURCES = {
 
 @st.cache_data(show_spinner=False)
 def load_data(path: str) -> pd.DataFrame:
+    # 若同名的 .parquet 檔存在，優先讀取 (檔案較小、載入較快，適合放在 GitHub)
+    parquet_path = path.rsplit(".", 1)[0] + ".parquet"
     try:
-        df = pd.read_csv(path, dtype=str)
+        if os.path.exists(parquet_path):
+            df = pd.read_parquet(parquet_path)
+        else:
+            df = pd.read_csv(path, dtype=str)
     except Exception:
         return pd.DataFrame()
 
