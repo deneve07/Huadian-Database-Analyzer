@@ -76,6 +76,13 @@ def parse_dosage(d):
     return float(m.group()) if m else 0.0
 
 
+def order_display_cols(value_cols, pct_cols, growth_cols):
+    """Req 4：占比要接在申報量後面 (金額之前)，而不是放在所有數值欄位最後"""
+    qty_cols = [c for c in value_cols if "申報量" in c]
+    other_cols = [c for c in value_cols if c not in qty_cols]
+    return qty_cols + pct_cols + other_cols + growth_cols
+
+
 def pretty_header(col: str):
     """把 '2022年申報量(顆)' 拆成 ('2022年','申報量')；'2022-2023年成長率(%)' 拆成 ('2022-2023年','成長率(%)')"""
     m = re.match(r"^(\d{4}(-\d{4})?年)(.+)$", col)
@@ -91,11 +98,12 @@ def pretty_header(col: str):
 # ============================================================
 
 def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list, value_cols: list,
-                       add_pct: bool = False, add_growth: bool = False):
+                       pct_years: list = None, add_growth: bool = False):
     qty_cols = [c for c in value_cols if "申報量" in c]
     qty_years = sorted(set(c[:4] for c in qty_cols))
+    pct_years = pct_years or []
 
-    pct_cols = [f"{y}年占比(%)" for y in qty_years] if add_pct else []
+    pct_cols = [f"{y}年占比(%)" for y in qty_years if y in pct_years]
     growth_cols = [f"{qty_years[i]}-{qty_years[i+1]}年成長率(%)" for i in range(len(qty_years) - 1)] if add_growth else []
 
     def compute_extra_for_row(sums, top_totals):
@@ -204,22 +212,24 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
 # ============================================================
 
 def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title):
-    extra_cols = pct_cols + growth_cols
-    headers = row_fields + value_cols + extra_cols
+    extra_cols = set(pct_cols + growth_cols)
+    display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
+    headers = row_fields + display_cols
 
-    th_style = "color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #FFFFFF;padding:8px 10px;font-weight:bold;"
-    td_style = "border:1px solid #D9D9D9;padding:6px 10px;"
+    font_family = "'Microsoft JhengHei', 'PingFang TC', '微軟正黑體', sans-serif"
+    th_style = f"color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #FFFFFF;padding:8px 10px;font-weight:bold;font-family:{font_family};"
+    td_style = f"border:1px solid #D9D9D9;padding:6px 10px;font-family:{font_family};"
 
     html = [
-        "<div style='background:#FFFFFF;border-radius:10px;padding:18px;border:1px solid #eee;'>",
-        f"<h3 style='text-align:center;color:#004D40;margin-top:0;'>{report_title}</h3>",
+        f"<div style='background:#FFFFFF;border-radius:10px;padding:18px;border:1px solid #eee;font-family:{font_family};'>",
+        f"<h3 style='text-align:center;color:#004D40;margin-top:0;font-family:{font_family};'>{report_title}</h3>",
         "<div style='overflow-x:auto;'>",
-        "<table id='report-table' style='border-collapse:separate;border-spacing:0;width:100%;font-size:14px;'>",
+        f"<table id='report-table' style='border-collapse:separate;border-spacing:0;width:100%;font-size:14px;font-family:{font_family};'>",
         "<tr>",
     ]
     for f in row_fields:
         html.append(f"<th style='{th_style}'>{f}</th>")
-    for c in value_cols + extra_cols:
+    for c in display_cols:
         year, label = pretty_header(c)
         if year:
             html.append(f"<th style='{th_style}'>{year}<br>{label}</th>")
@@ -241,12 +251,13 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
             v = r["values"].get(f, "")
             align = "left" if i == 0 else "center"
             html.append(f"<td style='{td_style}text-align:{align};'>{v}</td>")
-        for c in value_cols:
-            v = r["sums"].get(c, "")
-            html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if v != "" else f"<td style='{td_style}'></td>")
-        for c in extra_cols:
-            v = r["sums"].get(c, 0)
-            html.append(f"<td style='{td_style}text-align:right;'>{v:.1%}</td>")
+        for c in display_cols:
+            if c in extra_cols:
+                v = r["sums"].get(c, 0)
+                html.append(f"<td style='{td_style}text-align:right;'>{v:.1%}</td>")
+            else:
+                v = r["sums"].get(c, "")
+                html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if v != "" else f"<td style='{td_style}'></td>")
         html.append("</tr>")
 
     html.append("</table></div></div>")
@@ -255,15 +266,22 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
 
 CAPTURE_HTML_TEMPLATE = """
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<div id="capture-wrap">{table_html}</div>
-<div style="text-align:center; margin-top:12px;">
+<div style="text-align:center;">
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
-    border-radius:6px;font-size:14px;cursor:pointer;">🖼️ 匯出為 PNG 圖片</button>
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
 </div>
+<div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
 document.getElementById('export-btn').addEventListener('click', function() {{
     const target = document.getElementById('capture-wrap');
-    html2canvas(target, {{scale: 2, backgroundColor: '#ffffff'}}).then(function(canvas) {{
+    html2canvas(target, {{
+        scale: 2,
+        backgroundColor: '#ffffff',
+        windowWidth: target.scrollWidth,
+        windowHeight: target.scrollHeight,
+        width: target.scrollWidth,
+        height: target.scrollHeight
+    }}).then(function(canvas) {{
         const link = document.createElement('a');
         link.download = '{filename}.png';
         link.href = canvas.toDataURL('image/png');
@@ -279,8 +297,9 @@ document.getElementById('export-btn').addEventListener('click', function() {{
 # ============================================================
 
 def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, report_title):
-    extra_cols = pct_cols + growth_cols
-    headers = row_fields + value_cols + extra_cols
+    extra_cols = set(pct_cols + growth_cols)
+    display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
+    headers = row_fields + display_cols
 
     wb = Workbook()
     ws = wb.active
@@ -317,7 +336,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
     header_texts = []
     for f in row_fields:
         header_texts.append(f)
-    for c in value_cols + extra_cols:
+    for c in display_cols:
         year, label = pretty_header(c)
         header_texts.append(f"{year}\n{label}" if year else label)
     ws.append(header_texts)
@@ -433,7 +452,11 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             value_cols_auto = [c for c in other_cols if ("申報量" in c) or ("金額" in c)]
             dim_cols_all = [c for c in other_cols if c not in value_cols_auto]
 
-            st.markdown("### 🧩 第3步：拖曳欄位到「報表欄位」，並排序")
+            st.markdown(
+                "### 🧩 第3步：拖曳欄位到「報表欄位」，並排序　"
+                "<a href='#preview-section' style='font-size:14px;'>👉 直接跳到報表預覽</a>",
+                unsafe_allow_html=True,
+            )
             dnd_key = f"dnd_{ana_choice}_{'_'.join(sorted(comps_selected))}"
 
             if HAS_SORTABLES:
@@ -454,14 +477,14 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             if not row_fields:
                 st.info("請至少拖曳一個欄位到「報表欄位」區塊。")
             else:
-                st.markdown("### 🔍 第4步：逐欄篩選與合計 (點欄位下方的 🔽 展開篩選；如同 Excel 欄篩選)")
+                st.markdown("### 🔍 第4步：逐欄篩選與合計 (點欄位下方的「🔽 篩選 / 合計」展開設定；如同 Excel 欄篩選)")
                 filter_ui_cols = st.columns(len(row_fields))
                 filters = {}
                 subtotal_fields_selected = []
                 for i, f in enumerate(row_fields):
                     with filter_ui_cols[i]:
                         st.markdown(f"**{f}**")
-                        with st.popover("🔽 篩選 / 合計", use_container_width=True):
+                        with st.expander("🔽 篩選 / 合計", expanded=False):
                             options = sorted([v for v in df_comp[f].dropna().unique() if str(v).strip() != ""])
                             sel = st.multiselect(f"篩選「{f}」(不選代表全選)", options=options, key=f"filt_{dnd_key}_{f}")
                             if sel:
@@ -483,18 +506,29 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         options=value_cols_auto, default=value_cols_auto, key=f"vals_{dnd_key}",
                     )
                 with c_val2:
-                    has_qty = any("申報量" in c for c in value_cols)
-                    add_pct = st.checkbox("➕ 加入年度占比(%)", value=False, disabled=not has_qty, key=f"pct_{dnd_key}")
+                    qty_years_avail = sorted(set(c[:4] for c in value_cols if "申報量" in c))
+                    has_qty = len(qty_years_avail) > 0
+                    pct_years = st.multiselect(
+                        "➕ 加入年度占比(%) (可只選需要的年份)",
+                        options=qty_years_avail, default=[], disabled=not has_qty, key=f"pct_{dnd_key}",
+                    )
                     add_growth = st.checkbox("➕ 加入年度成長率(%)", value=False, disabled=not has_qty, key=f"growth_{dnd_key}")
 
-                # 即時預覽（隨拖曳/篩選/勾選即時更新，不需按產生報表）
+                # Req 7：檔名納入成分與所有篩選項目
+                filename_parts = list(comps_selected)
+                for col in row_fields:
+                    if col in filters:
+                        filename_parts.append("_".join(filters[col]))
+                filename_parts.append(ana_choice.split(".")[1].strip())
+                report_title = "_".join(filename_parts)
+
                 full_row_fields = ["成分簡稱"] + row_fields
-                report_title = f"{'_'.join(comps_selected)}_{ana_choice.split('.')[1].strip()}"
 
                 if value_cols and not df_filtered.empty:
                     rows, pct_cols, growth_cols = build_nested_rows(
-                        df_filtered, full_row_fields, subtotal_fields, value_cols, add_pct, add_growth
+                        df_filtered, full_row_fields, subtotal_fields, value_cols, pct_years, add_growth
                     )
+                    st.markdown("<div id='preview-section'></div>", unsafe_allow_html=True)
                     st.markdown("### 📄 報表即時預覽")
                     table_html = build_html_table(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
                     st.markdown(table_html, unsafe_allow_html=True)
@@ -511,12 +545,12 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                             use_container_width=True,
                         )
                     with dl_col2:
-                        with st.expander("🖼️ 匯出為 PNG 圖片", expanded=False):
-                            components.html(
-                                CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title),
-                                height=min(900, 200 + 40 * len(rows)),
-                                scrolling=True,
-                            )
+                        # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
+                        # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
+                        components.html(
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title),
+                            height=60,
+                        )
                 elif not value_cols:
                     st.warning("⚠️ 請至少選擇一個要加總的數值欄位。")
                 else:
