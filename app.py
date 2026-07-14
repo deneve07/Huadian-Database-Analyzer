@@ -37,13 +37,6 @@ except ImportError:
 
 st.set_page_config(page_title="華典資料庫分析系統", page_icon="📊", layout="wide")
 
-DATA_SOURCES = {
-    "HP+GP+DS 資料 (廠商 / 層級別 適用)": "data_hp_gp_ds.csv",
-    "科別資料": "data_department.csv",
-    "推估醫院資料": "data_hospital.csv",
-}
-
-
 @st.cache_data(show_spinner=False)
 def load_data(path: str) -> pd.DataFrame:
     # 若同名的 .parquet 檔存在，優先讀取 (檔案較小、載入較快，適合放在 GitHub)
@@ -52,9 +45,13 @@ def load_data(path: str) -> pd.DataFrame:
         if os.path.exists(parquet_path):
             df = pd.read_parquet(parquet_path)
         else:
-            df = pd.read_csv(path, dtype=str)
+            # utf-8-sig 可自動去除 Excel 匯出 CSV 常見的 BOM 字元，
+            # 否則第一欄欄名容易變成「\ufeff成分簡稱」導致 KeyError
+            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
     except Exception:
         return pd.DataFrame()
+
+    df.columns = [str(c).strip() for c in df.columns]
 
     # 欄位名稱正規化，讓不同資料集的欄位語意一致
     if "劑型小分類" in df.columns:
@@ -277,92 +274,124 @@ def analysis_prescription(df_filtered, vendor_name=None):
 
 st.title("📊 華典資料庫分析系統")
 
-tab_pivot, tab_prescription = st.tabs(["🧩 自訂樞紐分析", "💊 處方釋出率分析 (固定格式)"])
+ANALYSIS_TO_SOURCE = {
+    "1. 廠商分析": "data_hp_gp_ds.csv",
+    "2. 層級別分析": "data_hp_gp_ds.csv",
+    "3. 科別分析": "data_department.csv",
+    "4. 推估醫院分析": "data_hospital.csv",
+}
+ANA_OPTIONS = list(ANALYSIS_TO_SOURCE.keys()) + ["5. 處方釋出率分析"]
 
-# ---------------- 自訂樞紐分析 ----------------
-with tab_pivot:
-    st.caption("依資料來源挑選欄位、拖拉排序，並自由決定要合計的欄位，效果如同 Excel 樞紐分析。")
+ana_choice = st.selectbox("第1步：選擇分析功能", ANA_OPTIONS, key="ana_choice")
 
-    source_label = st.selectbox("第1步：選擇資料來源", list(DATA_SOURCES.keys()), key="pivot_source")
-    df_raw = load_data(DATA_SOURCES[source_label])
+# ============================================================
+# 1~4：自訂樞紐分析 (拖拉欄位)
+# ============================================================
+if ana_choice in ANALYSIS_TO_SOURCE:
+    st.caption("先選擇成分，接著把需要的欄位從左側拖到右側「報表欄位」區塊，可自行排序、逐欄篩選，並選擇是否合計。")
+
+    source_path = ANALYSIS_TO_SOURCE[ana_choice]
+    df_raw = load_data(source_path)
 
     if df_raw.empty:
-        st.warning(f"找不到資料檔案「{DATA_SOURCES[source_label]}」，請確認檔案已放置於工作目錄。")
+        st.warning(f"找不到資料檔案「{source_path}」，請確認檔案已放置於工作目錄。")
+    elif "成分簡稱" not in df_raw.columns:
+        st.error(f"資料檔案缺少「成分簡稱」欄位，實際欄位為：{list(df_raw.columns)}")
     else:
-        all_cols = list(df_raw.columns)
-        value_cols_auto = [c for c in all_cols if ("申報量" in c) or ("金額" in c)]
-        dim_cols_all = [c for c in all_cols if c not in value_cols_auto]
+        comp_options = sorted([c for c in df_raw["成分簡稱"].dropna().unique() if c])
+        search = st.text_input("第2步：輸入成分關鍵字", placeholder="例如: Levofloxacin", key=f"search_{ana_choice}")
+        filtered_comps = [c for c in comp_options if search.strip().lower() in c.lower()] if search.strip() else []
+        comps_selected = st.multiselect("第3步：選擇成分品項 (必選)", options=filtered_comps, key=f"comps_{ana_choice}")
 
-        st.markdown("### 🔍 第2步：篩選資料 (可複選；不選代表不篩選該欄位)")
-        filters = {}
-        filter_cols_ui = st.columns(3)
-        for i, col in enumerate(dim_cols_all):
-            options = sorted([v for v in df_raw[col].dropna().unique() if str(v).strip() != ""])
-            if 1 < len(options) <= 300:
-                with filter_cols_ui[i % 3]:
-                    sel = st.multiselect(col, options, key=f"filter_{source_label}_{col}")
-                    if sel:
-                        filters[col] = sel
-
-        df_filtered = df_raw.copy()
-        for col, sel in filters.items():
-            df_filtered = df_filtered[df_filtered[col].isin(sel)]
-
-        st.info(f"篩選後共 **{len(df_filtered):,}** 筆資料")
-
-        st.markdown("### 🧩 第3步：拖拉排序要放入報表的欄位 (由上到下＝報表由左到右)")
-        if HAS_SORTABLES:
-            ordered_all = sort_items(dim_cols_all, key=f"sortable_{source_label}")
+        if not comps_selected:
+            st.info("請先輸入關鍵字並選擇至少一個成分，才會顯示後續的欄位設定。")
         else:
-            st.error("尚未安裝 streamlit-sortables 套件，暫以預設順序呈現，請於 requirements.txt 加入 streamlit-sortables 後重新部署。")
-            ordered_all = dim_cols_all
+            df_comp = df_raw[df_raw["成分簡稱"].isin(comps_selected)]
 
-        default_selection = ordered_all[: min(4, len(ordered_all))]
-        row_fields_selected = st.multiselect(
-            "勾選要放入報表的欄位（將依照上方拖曳後的順序自動排列，不需要再手動調整順序）",
-            options=ordered_all,
-            default=default_selection,
-        )
-        row_fields = [f for f in ordered_all if f in row_fields_selected]
+            other_cols = [c for c in df_raw.columns if c != "成分簡稱"]
+            value_cols_auto = [c for c in other_cols if ("申報量" in c) or ("金額" in c)]
+            dim_cols_all = [c for c in other_cols if c not in value_cols_auto]
 
-        st.markdown("### Σ 第4步：選擇需要合計的欄位 (依上方順序由外而內巢狀合計)")
-        subtotal_selected = st.multiselect("合計欄位 (可複選，可留空代表不需要任何小計)", options=row_fields)
-        subtotal_fields = [f for f in row_fields if f in subtotal_selected]
+            st.markdown("### 🧩 第4步：拖曳欄位到右側「報表欄位」區塊，並排序")
+            dnd_key = f"dnd_{ana_choice}_{'_'.join(sorted(comps_selected))}"
 
-        st.markdown("### 🔢 第5步：選擇要加總的數值欄位")
-        value_cols = st.multiselect("數值欄位 (預設帶入所有申報量／金額欄位)", options=value_cols_auto, default=value_cols_auto)
-
-        st.divider()
-        if st.button("🚀 產生報表", type="primary", key="pivot_generate"):
-            if not row_fields:
-                st.error("⚠️ 請至少選擇一個要放入報表的欄位！")
-            elif not value_cols:
-                st.error("⚠️ 請至少選擇一個要加總的數值欄位！")
-            elif df_filtered.empty:
-                st.error("❌ 篩選後無資料，請放寬篩選條件。")
+            if HAS_SORTABLES:
+                containers = sort_items(
+                    [
+                        {"header": "📋 可用欄位 (拖曳到右側使用)", "items": dim_cols_all},
+                        {"header": "📊 報表欄位 (由上到下＝報表由左到右)", "items": []},
+                    ],
+                    multi_containers=True,
+                    key=dnd_key,
+                )
+                row_fields = containers[1]["items"] if containers and len(containers) > 1 else []
             else:
-                rows = build_nested_rows(df_filtered, row_fields, subtotal_fields, value_cols)
-                preview_df = rows_to_preview_df(rows, row_fields, value_cols)
-                report_title = f"{source_label}_自訂分析"
+                st.error("尚未安裝 streamlit-sortables 套件，暫以勾選方式呈現，請於 requirements.txt 加入 streamlit-sortables 後重新部署即可拖曳。")
+                row_fields = st.multiselect("選擇報表欄位", options=dim_cols_all, key=f"fallback_fields_{ana_choice}")
 
-                st.markdown("### 📄 報表預覽")
-                st.dataframe(preview_df, use_container_width=True, height=min(700, 40 + 32 * len(preview_df)))
+            if not row_fields:
+                st.info("請至少拖曳一個欄位到右側「報表欄位」區塊。")
+            else:
+                st.markdown("### 🔍 第5步：逐欄篩選 (可複選，不選代表不篩選該欄位) 與是否合計")
+                filters = {}
+                subtotal_fields = []
+                for f in row_fields:
+                    c1, c2 = st.columns([4, 1])
+                    with c1:
+                        options = sorted([v for v in df_comp[f].dropna().unique() if str(v).strip() != ""])
+                        sel = st.multiselect(f"🔽 {f}", options=options, key=f"filt_{dnd_key}_{f}")
+                        if sel:
+                            filters[f] = sel
+                    with c2:
+                        st.markdown("&nbsp;")
+                        if st.checkbox(f"Σ 合計「{f}」", key=f"sub_{dnd_key}_{f}"):
+                            subtotal_fields.append(f)
 
-                excel_bytes = generate_excel_bytes(rows, row_fields, value_cols, report_title)
-                st.download_button(
-                    "📥 下載 Excel 報表",
-                    data=excel_bytes,
-                    file_name=f"{report_title}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                df_filtered = df_comp.copy()
+                for col, sel in filters.items():
+                    df_filtered = df_filtered[df_filtered[col].isin(sel)]
+
+                st.info(f"篩選後共 **{len(df_filtered):,}** 筆資料")
+
+                value_cols = st.multiselect(
+                    "第6步：選擇要加總的數值欄位 (預設帶入所有申報量／金額欄位)",
+                    options=value_cols_auto, default=value_cols_auto, key=f"vals_{dnd_key}",
                 )
 
-# ---------------- 處方釋出率分析（固定格式） ----------------
-with tab_prescription:
+                st.divider()
+                if st.button("🚀 產生報表", type="primary", key=f"gen_{dnd_key}"):
+                    full_row_fields = ["成分簡稱"] + row_fields
+                    if not value_cols:
+                        st.error("⚠️ 請至少選擇一個要加總的數值欄位！")
+                    elif df_filtered.empty:
+                        st.error("❌ 篩選後無資料，請放寬篩選條件。")
+                    else:
+                        rows = build_nested_rows(df_filtered, full_row_fields, subtotal_fields, value_cols)
+                        preview_df = rows_to_preview_df(rows, full_row_fields, value_cols)
+                        report_title = f"{'_'.join(comps_selected)}_{ana_choice.split('.')[1].strip()}"
+
+                        st.markdown("### 📄 報表預覽")
+                        st.dataframe(preview_df, use_container_width=True, height=min(700, 40 + 32 * len(preview_df)))
+
+                        excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, report_title)
+                        st.download_button(
+                            "📥 下載 Excel 報表",
+                            data=excel_bytes,
+                            file_name=f"{report_title}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        )
+
+# ============================================================
+# 5：處方釋出率分析（固定格式）
+# ============================================================
+else:
     st.caption("分析成分從醫院端流向藥局處方的釋出率，可看單一廠商。此分析維持固定格式，不提供自訂欄位。")
 
     df_hp = load_data("data_hp_gp_ds.csv")
     if df_hp.empty:
         st.warning("找不到資料檔案「data_hp_gp_ds.csv」，請確認檔案已放置於工作目錄。")
+    elif "成分簡稱" not in df_hp.columns:
+        st.error(f"資料檔案缺少「成分簡稱」欄位，實際欄位為：{list(df_hp.columns)}")
     else:
         comp_options = sorted([c for c in df_hp["成分簡稱"].dropna().unique() if c])
         search = st.text_input("第1步：輸入成分關鍵字", placeholder="例如: Levofloxacin", key="presc_search")
