@@ -478,6 +478,15 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                 st.info("請至少拖曳一個欄位到「報表欄位」區塊。")
             else:
                 st.markdown("### 🔍 第4步：逐欄篩選與合計 (點欄位下方的「🔽 篩選 / 合計」展開設定；如同 Excel 欄篩選)")
+                st.caption("💡 篩選會彼此連動：某欄位選擇後，其他欄位只會列出仍有對應資料的選項，避免篩出不存在的組合。")
+
+                # 先讀取目前各欄位已選的篩選值 (用於彼此連動縮小可選範圍)
+                current_filters = {}
+                for f in row_fields:
+                    key = f"filt_{dnd_key}_{f}"
+                    if key in st.session_state and st.session_state[key]:
+                        current_filters[f] = st.session_state[key]
+
                 filter_ui_cols = st.columns(len(row_fields))
                 filters = {}
                 subtotal_fields_selected = []
@@ -485,8 +494,19 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     with filter_ui_cols[i]:
                         st.markdown(f"**{f}**")
                         with st.expander("🔽 篩選 / 合計", expanded=False):
-                            options = sorted([v for v in df_comp[f].dropna().unique() if str(v).strip() != ""])
-                            sel = st.multiselect(f"篩選「{f}」(不選代表全選)", options=options, key=f"filt_{dnd_key}_{f}")
+                            # 依其他欄位目前的篩選結果，動態縮小此欄位可選項目
+                            df_scope = df_comp
+                            for other_col, other_sel in current_filters.items():
+                                if other_col != f and other_sel:
+                                    df_scope = df_scope[df_scope[other_col].isin(other_sel)]
+                            options = sorted([v for v in df_scope[f].dropna().unique() if str(v).strip() != ""])
+
+                            key = f"filt_{dnd_key}_{f}"
+                            # 若其他欄位變動導致此欄位先前選的值已不存在，先清掉避免元件報錯
+                            if key in st.session_state:
+                                st.session_state[key] = [v for v in st.session_state[key] if v in options]
+
+                            sel = st.multiselect(f"篩選「{f}」(不選代表全選)", options=options, key=key)
                             if sel:
                                 filters[f] = sel
                             if st.checkbox(f"Σ 此欄要合計", key=f"sub_{dnd_key}_{f}"):
