@@ -220,7 +220,7 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
     headers = row_fields + display_cols
 
-    font_family = "'Microsoft JhengHei', 'PingFang TC', '微軟正黑體', sans-serif"
+    font_family = "'Microsoft JhengHei', 'Noto Sans TC', 'PingFang TC', 'Heiti TC', 'Microsoft YaHei', Arial, sans-serif"
     th_style = f"color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #FFFFFF;padding:8px 10px;font-weight:bold;font-family:{font_family};"
     td_style = f"border:1px solid #D9D9D9;padding:6px 10px;font-family:{font_family};"
 
@@ -269,6 +269,9 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
 
 
 CAPTURE_HTML_TEMPLATE = """
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <div style="text-align:center;">
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
@@ -278,18 +281,21 @@ CAPTURE_HTML_TEMPLATE = """
 <script>
 document.getElementById('export-btn').addEventListener('click', function() {{
     const target = document.getElementById('capture-wrap');
-    html2canvas(target, {{
-        scale: 2,
-        backgroundColor: '#ffffff',
-        windowWidth: target.scrollWidth,
-        windowHeight: target.scrollHeight,
-        width: target.scrollWidth,
-        height: target.scrollHeight
-    }}).then(function(canvas) {{
-        const link = document.createElement('a');
-        link.download = '{filename}.png';
-        link.href = canvas.toDataURL('image/png');
-        link.click();
+    // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
+    document.fonts.ready.then(function() {{
+        html2canvas(target, {{
+            scale: 2,
+            backgroundColor: '#ffffff',
+            windowWidth: target.scrollWidth,
+            windowHeight: target.scrollHeight,
+            width: target.scrollWidth,
+            height: target.scrollHeight
+        }}).then(function(canvas) {{
+            const link = document.createElement('a');
+            link.download = '{filename}.png';
+            link.href = canvas.toDataURL('image/png');
+            link.click();
+        }});
     }});
 }});
 </script>
