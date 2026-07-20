@@ -133,9 +133,27 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
         return extra
 
     year_cols = sorted(qty_cols, reverse=True)
-    sort_cols = list(subtotal_fields) + year_cols
-    sort_asc = [True] * len(subtotal_fields) + [False] * len(year_cols)
+
+    sort_cols = []
+    sort_asc = []
+    temp_sort_cols = []
+    for col in subtotal_fields:
+        if col == "含量":
+            # 含量欄位需依實際劑量數值排序 (例如 12mg/ml < 24mg/ml < 100mg/ml)，
+            # 而非把它當一般文字做字母排序 (那樣 "100mg/ml" 會排到 "12mg/ml" 前面)
+            tmp_col = "__sortkey_含量"
+            df[tmp_col] = df[col].map(parse_dosage)
+            sort_cols.append(tmp_col)
+            temp_sort_cols.append(tmp_col)
+        else:
+            sort_cols.append(col)
+        sort_asc.append(True)
+    sort_cols += year_cols
+    sort_asc += [False] * len(year_cols)
+
     df_sorted = df.sort_values(by=sort_cols, ascending=sort_asc) if sort_cols else df
+    if temp_sort_cols:
+        df_sorted = df_sorted.drop(columns=temp_sort_cols)
 
     if subtotal_fields:
         min_level_idx = min(row_fields.index(c) for c in subtotal_fields)
