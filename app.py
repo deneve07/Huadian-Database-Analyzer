@@ -133,8 +133,8 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
         return extra
 
     year_cols = sorted(qty_cols, reverse=True)
-    sort_cols = list(row_fields) + year_cols
-    sort_asc = [True] * len(row_fields) + [False] * len(year_cols)
+    sort_cols = list(subtotal_fields) + year_cols
+    sort_asc = [True] * len(subtotal_fields) + [False] * len(year_cols)
     df_sorted = df.sort_values(by=sort_cols, ascending=sort_asc) if sort_cols else df
 
     if subtotal_fields:
@@ -456,11 +456,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             value_cols_auto = [c for c in other_cols if ("申報量" in c) or ("金額" in c)]
             dim_cols_all = [c for c in other_cols if c not in value_cols_auto]
 
-            st.markdown(
-                "### 🧩 第3步：拖曳欄位到「報表欄位」，並排序　"
-                "<a href='#preview-section' style='font-size:14px;'>👉 直接跳到報表預覽</a>",
-                unsafe_allow_html=True,
-            )
+            st.markdown("### 🧩 第3步：拖曳欄位到「報表欄位」，並排序")
             dnd_key = f"dnd_{ana_choice}_{'_'.join(sorted(comps_selected))}"
 
             state_key = f"pivot_state_{dnd_key}"
@@ -566,7 +562,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     rows, pct_cols, growth_cols = build_nested_rows(
                         df_filtered, full_row_fields, subtotal_fields, value_cols, pct_years, add_growth
                     )
-                    st.markdown("<div id='preview-section'></div>", unsafe_allow_html=True)
                     st.markdown("### 📄 報表即時預覽")
                     table_html = build_html_table(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
                     st.markdown(table_html, unsafe_allow_html=True)
