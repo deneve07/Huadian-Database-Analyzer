@@ -459,17 +459,31 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             )
             dnd_key = f"dnd_{ana_choice}_{'_'.join(sorted(comps_selected))}"
 
+            state_key = f"pivot_state_{dnd_key}"
+            if state_key not in st.session_state:
+                st.session_state[state_key] = {"available": dim_cols_all, "selected": []}
+            else:
+                # 換了成分/分析功能等情境下，欄位清單內容可能改變，這裡做防呆同步
+                prev = st.session_state[state_key]
+                avail = [c for c in prev["available"] if c in dim_cols_all]
+                sel = [c for c in prev["selected"] if c in dim_cols_all]
+                known = set(avail) | set(sel)
+                avail += [c for c in dim_cols_all if c not in known]
+                st.session_state[state_key] = {"available": avail, "selected": sel}
+
             if HAS_SORTABLES:
                 containers = sort_items(
                     [
-                        {"header": "📋 可用欄位 (拖曳到下方使用)", "items": dim_cols_all},
-                        {"header": "📊 報表欄位 (由左到右排列；如同樞紐分析表的欄位區)", "items": []},
+                        {"header": "📋 可用欄位 (拖曳到下方使用)", "items": st.session_state[state_key]["available"]},
+                        {"header": "📊 報表欄位 (由左到右排列；如同樞紐分析表的欄位區)", "items": st.session_state[state_key]["selected"]},
                     ],
                     multi_containers=True,
                     direction="horizontal",
                     key=dnd_key,
                 )
-                row_fields = containers[1]["items"] if containers and len(containers) > 1 else []
+                if containers and len(containers) > 1:
+                    st.session_state[state_key] = {"available": containers[0]["items"], "selected": containers[1]["items"]}
+                row_fields = st.session_state[state_key]["selected"]
             else:
                 st.error("尚未安裝 streamlit-sortables 套件，暫以勾選方式呈現，請於 requirements.txt 加入 streamlit-sortables 後重新部署即可拖曳。")
                 row_fields = st.multiselect("選擇報表欄位", options=dim_cols_all, key=f"fallback_fields_{ana_choice}")
