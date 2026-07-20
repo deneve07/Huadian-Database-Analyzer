@@ -99,6 +99,10 @@ def pretty_header(col: str):
 
 def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list, value_cols: list,
                        pct_years: list = None, add_growth: bool = False):
+    # 先依「報表欄位」的組合彙總數值，確保同一個欄位組合 (例如同一家廠商) 只會出現一列，
+    # 而不是把資料集裡每一筆原始紀錄 (可能還有藥品名稱、藥證字號等未顯示的欄位差異) 都個別列出來
+    df = df.groupby(row_fields, as_index=False)[value_cols].sum()
+
     qty_cols = [c for c in value_cols if "申報量" in c]
     qty_years = sorted(set(c[:4] for c in qty_cols))
     pct_years = pct_years or []
