@@ -17,6 +17,7 @@
 import re
 import io
 import os
+import base64
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -355,6 +356,76 @@ document.getElementById('export-btn').addEventListener('click', async function()
 """
 
 
+EXCEL_SHARE_HTML_TEMPLATE = """
+<div style="text-align:center;">
+  <button id="excel-share-btn-{uid}" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📄 下載 / 分享 Excel 報表</button>
+</div>
+<div id="excel-result-area-{uid}" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
+<script>
+document.getElementById('excel-share-btn-{uid}').addEventListener('click', async function() {{
+    const resultArea = document.getElementById('excel-result-area-{uid}');
+    resultArea.innerText = '🔄 準備檔案中，請稍候...';
+    try {{
+        const b64 = "{b64data}";
+        const byteChars = atob(b64);
+        const byteNumbers = new Array(byteChars.length);
+        for (let i = 0; i < byteChars.length; i++) {{
+            byteNumbers[i] = byteChars.charCodeAt(i);
+        }}
+        const byteArray = new Uint8Array(byteNumbers);
+        const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+        const blob = new Blob([byteArray], {{type: mime}});
+        const file = new File([blob], '{filename}.xlsx', {{type: mime}});
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+        if (isMobile) {{
+            if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+                // 用系統分享面板取代 <a download>，避免 iOS 加入主畫面的 App
+                // 因為缺少瀏覽器介面（無上一頁鍵）而卡在 Quick Look 檔案預覽畫面出不去
+                await navigator.share({{files: [file], title: '{filename}'}});
+                resultArea.innerText = '✅ 已開啟分享選單，選「儲存到檔案」即可下載';
+            }} else {{
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = '{filename}.xlsx';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                resultArea.innerText = '✅ 已開始下載';
+            }}
+        }} else {{
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '{filename}.xlsx';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            resultArea.innerText = '✅ 已開始下載';
+        }}
+    }} catch (err) {{
+        resultArea.innerText = '❌ 失敗：' + (err && err.message ? err.message : err);
+    }}
+}});
+</script>
+"""
+
+
+def render_excel_share(excel_bytes: bytes, filename: str, uid: str):
+    """以分享面板 (navigator.share) 方式提供 Excel 下載，避免 iOS 加入主畫面
+    (standalone PWA) 因缺少瀏覽器導覽列，下載後卡在 Quick Look 檔案預覽頁面
+    卻無法返回 App 的問題。"""
+    b64data = base64.b64encode(excel_bytes).decode()
+    safe_uid = re.sub(r"[^0-9A-Za-z_]", "_", uid)
+    components.html(
+        EXCEL_SHARE_HTML_TEMPLATE.format(b64data=b64data, filename=filename, uid=safe_uid),
+        height=70,
+    )
+
+
 # ============================================================
 # Excel 匯出 (比照原系統的綠底標題、A4 橫式、標題列重複列印)
 # ============================================================
@@ -657,7 +728,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     dl_col1, dl_col2 = st.columns(2)
                     with dl_col1:
                         excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
-                        我用瀏覽器開啟此網頁時是我要的下載excel畫面沒錯，但我發現將此網頁加入手機主畫面變app在上面操作時就會出現之前的下載畫面，可以怎麼解決？
+                        render_excel_share(excel_bytes, report_title, uid=f"pivot_{dnd_key}")
                     with dl_col2:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
@@ -777,62 +848,9 @@ else:
                             summary["rows"], summary["row_fields"], summary["value_cols"],
                             summary["pct_cols"], summary["growth_cols"], report_filename, summary_lines,
                         )
-# 1. 產生 Excel byte 資料 (保留你原本的程式碼)
-# excel_bytes = generate_excel_bytes(...)
-
-# 2. 將 Excel 轉為 Base64 字串，方便傳遞給前端 JavaScript
-b64_excel = base64.b64encode(excel_bytes).decode()
-
-# 3. 建立自訂的分享按鈕 (整合了你系統中的深綠色按鈕風格)
-excel_share_html = f"""
-<div style="text-align:center;">
-  <button id="share-excel-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
-    border-radius:6px;font-size:14px;cursor:pointer;width:100%;font-family:'Microsoft JhengHei', sans-serif;">
-    📄 下載 / 儲存 Excel 報表
-  </button>
-  <div id="excel-msg" style="margin-top:5px;font-size:13px;color:#00695C;"></div>
-</div>
-<script>
-document.getElementById('share-excel-btn').addEventListener('click', async function() {{
-    const msg = document.getElementById('excel-msg');
-    msg.innerText = '🔄 準備檔案中...';
-    try {{
-        // 將 Base64 轉回二進位檔案
-        const b64Data = '{b64_excel}';
-        const byteCharacters = atob(b64Data);
-        const byteNumbers = new Array(byteCharacters.length);
-        for (let i = 0; i < byteCharacters.length; i++) {{
-            byteNumbers[i] = byteCharacters.charCodeAt(i);
-        }}
-        const byteArray = new Uint8Array(byteNumbers);
-        const blob = new Blob([byteArray], {{type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}});
-        const file = new File([blob], '{report_title}.xlsx', {{type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'}});
-
-        // 判斷是否為行動裝置
-        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) || 
-                         (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
-
-        if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
-            // 手機版：直接呼叫原生分享選單，不會跳轉畫面！
-            await navigator.share({{files: [file], title: '{report_title}'}});
-            msg.innerText = '✅ 已開啟分享選單，請選擇「儲存到檔案」';
-        }} else {{
-            // 電腦版：使用傳統下載模式
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '{report_title}.xlsx';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            msg.innerText = '✅ 已開始下載';
-        }}
-    }} catch (err) {{
-        msg.innerText = '❌ 匯出失敗：' + (err.message || err);
-    }}
-}});
-</script>
-"""
-
-# 4. 渲染這個自訂按鈕取代原本的 st.download_button (注意高度要抓夠，以免裁切)
-components.html(excel_share_html, height=75)
+                        render_excel_share(excel_bytes, report_filename, uid="presc")
+                    with dl_col2:
+                        components.html(
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename),
+                            height=60,
+                        )
