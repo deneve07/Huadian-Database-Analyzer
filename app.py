@@ -47,8 +47,6 @@ def load_data(path: str) -> pd.DataFrame:
         if os.path.exists(parquet_path):
             df = pd.read_parquet(parquet_path)
         else:
-            # utf-8-sig 可自動去除 Excel 匯出 CSV 常見的 BOM 字元，
-            # 否則第一欄欄名容易變成「\ufeff成分簡稱」導致 KeyError
             df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
     except Exception:
         return pd.DataFrame()
@@ -78,14 +76,12 @@ def parse_dosage(d):
 
 
 def order_display_cols(value_cols, pct_cols, growth_cols):
-    """Req 4：占比要接在申報量後面 (金額之前)，而不是放在所有數值欄位最後"""
     qty_cols = [c for c in value_cols if "申報量" in c]
     other_cols = [c for c in value_cols if c not in qty_cols]
     return qty_cols + pct_cols + other_cols + growth_cols
 
 
 def pretty_header(col: str):
-    """把 '2022年申報量(顆)' 拆成 ('2022年','申報量')；'2022-2023年成長率(%)' 拆成 ('2022-2023年','成長率(%)')"""
     m = re.match(r"^(\d{4}(-\d{4})?年)(.+)$", col)
     if m:
         year = m.group(1)
@@ -100,8 +96,6 @@ def pretty_header(col: str):
 
 def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list, value_cols: list,
                        pct_years: list = None, add_growth: bool = False):
-    # 先依「報表欄位」的組合彙總數值，確保同一個欄位組合 (例如同一家廠商) 只會出現一列，
-    # 而不是把資料集裡每一筆原始紀錄 (可能還有藥品名稱、藥證字號等未顯示的欄位差異) 都個別列出來
     df = df.groupby(row_fields, as_index=False)[value_cols].sum()
 
     qty_cols = [c for c in value_cols if "申報量" in c]
@@ -125,7 +119,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
         return extra
 
     def compute_extra_for_group(totals):
-        extra = {c: 1.0 for c in pct_cols}  # 小計/總計列本身佔比恆為 100%
+        extra = {c: 1.0 for c in pct_cols}
         for c in growth_cols:
             y1 = c[:4]
             y2 = c[5:9]
@@ -140,8 +134,6 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
     temp_sort_cols = []
     for col in subtotal_fields:
         if col == "含量":
-            # 含量欄位需依實際劑量數值排序 (例如 12mg/ml < 24mg/ml < 100mg/ml)，
-            # 而非把它當一般文字做字母排序 (那樣 "100mg/ml" 會排到 "12mg/ml" 前面)
             tmp_col = "__sortkey_含量"
             df[tmp_col] = df[col].map(parse_dosage)
             sort_cols.append(tmp_col)
@@ -231,7 +223,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
 
 
 # ============================================================
-# 樣式化 HTML 預覽 (比照原系統的綠底標題、小計/總計配色)
+# 樣式化 HTML 預覽
 # ============================================================
 
 def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_html=""):
@@ -287,6 +279,9 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     html.append("</table></div></div>")
     return "".join(html)
 
+# ============================================================
+# 優化與修復版 HTML & 下載按鈕範本
+# ============================================================
 
 CAPTURE_HTML_TEMPLATE = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -297,15 +292,15 @@ CAPTURE_HTML_TEMPLATE = """
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
     border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
 </div>
-<div id="result-area" style="margin-top:10px;text-align:center;"></div>
+<div id="result-area" style="margin-top:8px;font-size:12px;color:#00695C;text-align:center;"></div>
 <div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
 document.getElementById('export-btn').addEventListener('click', async function() {{
     const target = document.getElementById('capture-wrap');
     const resultArea = document.getElementById('result-area');
-    resultArea.innerHTML = "<p style='font-size:13px;color:#00695C;margin:8px 0;'>圖片產生中，請稍候...</p>";
+    resultArea.innerHTML = "圖片產生中，請稍候...";
     
-    // 等待字型完全載入後才擷取，避免回退成預設字體
+    // 確保字型套用
     await document.fonts.ready;
     const canvas = await html2canvas(target, {{
         scale: 2,
@@ -315,32 +310,35 @@ document.getElementById('export-btn').addEventListener('click', async function()
         width: target.scrollWidth,
         height: target.scrollHeight
     }});
+    
     canvas.toBlob(async function(blob) {{
         const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
+        let isShared = false;
         
-        // 嘗試使用行動裝置的原生分享選單
+        // 優先嘗試手機瀏覽器原生分享機制
         if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
             try {{
                 await navigator.share({{files: [file], title: '{filename}'}});
                 resultArea.innerHTML = "";
-                return;
-            }} catch (e) {{ /* 使用者取消分享或環境不支援，改用備用方式 */ }}
+                isShared = true;
+            }} catch (e) {{ 
+                // 使用者取消分享或環境不支援
+            }}
         }}
         
-        // 電腦版或不支援分享 API 的備用下載方式：自動觸發下載
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '{filename}.png';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        // 顯示下載完成提示，不使用 <img> 以免撐破 height=60 的 iframe 限制
-        resultArea.innerHTML = "<p style='font-size:13px;color:#00695C;margin:8px 0;'>✅ 圖片已開始下載</p>";
-        
-        // 釋放記憶體
-        setTimeout(() => URL.revokeObjectURL(url), 1000);
+        // 若無法使用分享 API（例如在電腦版），自動降級為直接下載
+        if (!isShared) {{
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = '{filename}.png';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            
+            resultArea.innerHTML = '✅ 圖片已開始下載';
+            setTimeout(() => URL.revokeObjectURL(url), 2000);
+        }}
     }}, 'image/png');
 }});
 </script>
@@ -361,28 +359,38 @@ document.getElementById('excel-btn').addEventListener('click', async function() 
     const byteArray = new Uint8Array(byteNumbers);
     const blob = new Blob([byteArray], {{type: 'application/octet-stream'}});
     const file = new File([blob], '{filename}.xlsx', {{type: 'application/octet-stream'}});
-    // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存到檔案」，不會跳出 Quick Look 預覽卡住
+    
+    let isShared = false;
+    
+    // 手機瀏覽器優先用原生分享選單
     if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
         try {{
             await navigator.share({{files: [file], title: '{filename}'}});
-            return;
-        }} catch (e) {{ /* 使用者取消分享，改用備用下載方式 */ }}
+            isShared = true;
+        }} catch (e) {{ 
+            // 使用者取消分享或環境不支援 
+        }}
     }}
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = '{filename}.xlsx';
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    document.getElementById('excel-result').innerText = '已開始下載';
+    
+    // 電腦版或不支援分享 API 的備用下載方式
+    if (!isShared) {{
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '{filename}.xlsx';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        document.getElementById('excel-result').innerText = '✅ Excel 已開始下載';
+        setTimeout(() => URL.revokeObjectURL(url), 2000);
+    }}
 }});
 </script>
 """
 
 
 # ============================================================
-# Excel 匯出 (比照原系統的綠底標題、A4 橫式、標題列重複列印)
+# Excel 匯出
 # ============================================================
 
 def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_lines=None):
@@ -432,7 +440,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
                     cell.font = font_rate if fmt == "0.00%" else font_summary
             ws.cell(row=next_row, column=1).font = font_rate if (fmt == "0.00%") else font_summary
             next_row += 1
-        next_row += 1  # 空一行
+        next_row += 1
 
     header_row = next_row
     ws.append([])
@@ -552,7 +560,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
         st.error(f"資料檔案缺少「成分簡稱」欄位，實際欄位為：{list(df_raw.columns)}")
     else:
         comp_options = sorted([c for c in df_raw["成分簡稱"].dropna().unique() if c])
-        # 單一元件即支援輸入時自動篩選（Streamlit multiselect 內建 type-to-search）
         comps_selected = st.multiselect(
             "第2步：輸入關鍵字並選擇成分品項 (必選)",
             options=comp_options,
@@ -576,7 +583,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             if state_key not in st.session_state:
                 st.session_state[state_key] = {"available": dim_cols_all, "selected": []}
             else:
-                # 換了成分/分析功能等情境下，欄位清單內容可能改變，這裡做防呆同步
                 prev = st.session_state[state_key]
                 avail = [c for c in prev["available"] if c in dim_cols_all]
                 sel = [c for c in prev["selected"] if c in dim_cols_all]
@@ -607,7 +613,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                 st.markdown("### 🔍 第4步：逐欄篩選與合計 (點欄位下方的「🔽 篩選 / 合計」展開設定；如同 Excel 欄篩選)")
                 st.caption("💡 篩選會彼此連動：某欄位選擇後，其他欄位只會列出仍有對應資料的選項，避免篩出不存在的組合。")
 
-                # 先讀取目前各欄位已選的篩選值 (用於彼此連動縮小可選範圍)
                 current_filters = {}
                 for f in row_fields:
                     key = f"filt_{dnd_key}_{f}"
@@ -621,7 +626,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     with filter_ui_cols[i]:
                         st.markdown(f"**{f}**")
                         with st.expander("🔽 篩選 / 合計", expanded=False):
-                            # 依其他欄位目前的篩選結果，動態縮小此欄位可選項目
                             df_scope = df_comp
                             for other_col, other_sel in current_filters.items():
                                 if other_col != f and other_sel:
@@ -629,7 +633,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                             options = sorted([v for v in df_scope[f].dropna().unique() if str(v).strip() != ""])
 
                             key = f"filt_{dnd_key}_{f}"
-                            # 若其他欄位變動導致此欄位先前選的值已不存在，先清掉避免元件報錯
                             if key in st.session_state:
                                 st.session_state[key] = [v for v in st.session_state[key] if v in options]
 
@@ -661,7 +664,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     )
                     add_growth = st.checkbox("➕ 加入年度成長率(%)", value=False, disabled=not has_qty, key=f"growth_{dnd_key}")
 
-                # Req 7：檔名納入成分與所有篩選項目
                 filename_parts = list(comps_selected)
                 for col in row_fields:
                     if col in filters:
@@ -689,8 +691,6 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                             height=60,
                         )
                     with dl_col2:
-                        # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
-                        # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
                             CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title),
                             height=60,
