@@ -297,13 +297,15 @@ CAPTURE_HTML_TEMPLATE = """
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
     border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
 </div>
-<div id="result-area" style="margin-top:10px;"></div>
+<div id="result-area" style="margin-top:10px;text-align:center;"></div>
 <div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
 document.getElementById('export-btn').addEventListener('click', async function() {{
     const target = document.getElementById('capture-wrap');
     const resultArea = document.getElementById('result-area');
-    // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
+    resultArea.innerHTML = "<p style='font-size:13px;color:#00695C;margin:8px 0;'>圖片產生中，請稍候...</p>";
+    
+    // 等待字型完全載入後才擷取，避免回退成預設字體
     await document.fonts.ready;
     const canvas = await html2canvas(target, {{
         scale: 2,
@@ -315,17 +317,30 @@ document.getElementById('export-btn').addEventListener('click', async function()
     }});
     canvas.toBlob(async function(blob) {{
         const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
-        // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存影像」到相簿，不會卡在預覽畫面出不去
+        
+        // 嘗試使用行動裝置的原生分享選單
         if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
             try {{
                 await navigator.share({{files: [file], title: '{filename}'}});
+                resultArea.innerHTML = "";
                 return;
-            }} catch (e) {{ /* 使用者取消分享，改用備用方式 */ }}
+            }} catch (e) {{ /* 使用者取消分享或環境不支援，改用備用方式 */ }}
         }}
+        
+        // 電腦版或不支援分享 API 的備用下載方式：自動觸發下載
         const url = URL.createObjectURL(blob);
-        resultArea.innerHTML =
-            "<p style='font-size:13px;color:#00695C;margin:8px 0;'>長按下方圖片，選擇「儲存影像」即可存入相簿</p>" +
-            "<img src='" + url + "' style='max-width:100%;border-radius:8px;border:1px solid #eee;' />";
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = '{filename}.png';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        
+        // 顯示下載完成提示，不使用 <img> 以免撐破 height=60 的 iframe 限制
+        resultArea.innerHTML = "<p style='font-size:13px;color:#00695C;margin:8px 0;'>✅ 圖片已開始下載</p>";
+        
+        // 釋放記憶體
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
     }}, 'image/png');
 }});
 </script>
