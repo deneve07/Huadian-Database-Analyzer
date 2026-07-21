@@ -392,7 +392,8 @@ CAPTURE_HTML_TEMPLATE = """
             // 可大幅縮小 PDF 檔案體積 (表格文字仍清晰，僅色階做輕微壓縮)
             const imgData = canvas.toDataURL('image/jpeg', 0.92);
             const {{ jsPDF }} = window.jspdf;
-            // 固定 A4 橫式頁面，圖片等比例縮放後置中，避免內容被裁切或變形
+            // 固定 A4 橫式頁面；優先讓內容鋪滿整個可印刷區域 (符合頁面)，
+            // 僅在長寬比例與頁面差異過大時才退回等比例縮放，避免內容被拉伸到明顯變形
             const pdf = new jsPDF({{
                 orientation: 'landscape',
                 unit: 'mm',
@@ -405,14 +406,26 @@ CAPTURE_HTML_TEMPLATE = """
             const maxWidth = pageWidth - margin * 2;
             const maxHeight = pageHeight - margin * 2;
             const imgRatio = canvas.width / canvas.height;
-            let drawWidth = maxWidth;
-            let drawHeight = drawWidth / imgRatio;
-            if (drawHeight > maxHeight) {{
+            const pageRatio = maxWidth / maxHeight;
+            // 若鋪滿頁面所需的水平/垂直拉伸比例相差在可接受範圍內 (0.6~1.6 倍)，就直接鋪滿；
+            // 差異過大 (例如內容極窄極長) 才改回等比例縮放，避免明顯變形
+            const stretchFactor = imgRatio / pageRatio;
+            let drawWidth, drawHeight, offsetX, offsetY;
+            if (stretchFactor >= 0.6 && stretchFactor <= 1.6) {{
+                drawWidth = maxWidth;
                 drawHeight = maxHeight;
-                drawWidth = drawHeight * imgRatio;
+                offsetX = margin;
+                offsetY = margin;
+            }} else {{
+                drawWidth = maxWidth;
+                drawHeight = drawWidth / imgRatio;
+                if (drawHeight > maxHeight) {{
+                    drawHeight = maxHeight;
+                    drawWidth = drawHeight * imgRatio;
+                }}
+                offsetX = (pageWidth - drawWidth) / 2;
+                offsetY = margin;
             }}
-            const offsetX = (pageWidth - drawWidth) / 2;
-            const offsetY = margin;
             pdf.addImage(imgData, 'JPEG', offsetX, offsetY, drawWidth, drawHeight, undefined, 'MEDIUM');
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
