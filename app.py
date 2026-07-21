@@ -223,7 +223,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
 
 
 # ============================================================
-# 樣式化 HTML 預覽
+# 樣式化 HTML 預覽 
 # ============================================================
 
 def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_html=""):
@@ -280,7 +280,7 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     return "".join(html)
 
 # ============================================================
-# 優化與修復版 HTML & 下載按鈕範本
+# ✅ 修正版 HTML & 下載按鈕範本 (嚴格區分手機與電腦)
 # ============================================================
 
 CAPTURE_HTML_TEMPLATE = """
@@ -300,7 +300,6 @@ document.getElementById('export-btn').addEventListener('click', async function()
     const resultArea = document.getElementById('result-area');
     resultArea.innerHTML = "圖片產生中，請稍候...";
     
-    // 確保字型套用
     await document.fonts.ready;
     const canvas = await html2canvas(target, {{
         scale: 2,
@@ -313,20 +312,23 @@ document.getElementById('export-btn').addEventListener('click', async function()
     
     canvas.toBlob(async function(blob) {{
         const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
+        
+        // 嚴格偵測是否為手機裝置 (iPhone, iPad, Android)
+        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         let isShared = false;
         
-        // 優先嘗試手機瀏覽器原生分享機制
-        if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+        // 【只有手機】才嘗試使用原生分享選單，避免電腦版跳出不必要的分享視窗
+        if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
             try {{
                 await navigator.share({{files: [file], title: '{filename}'}});
                 resultArea.innerHTML = "";
                 isShared = true;
             }} catch (e) {{ 
-                // 使用者取消分享或環境不支援
+                // 使用者取消
             }}
         }}
         
-        // 若無法使用分享 API（例如在電腦版），自動降級為直接下載
+        // 【電腦版】或手機分享失敗時，強制使用直接點擊下載模式 (同 0721-1 原本行為)
         if (!isShared) {{
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -360,19 +362,18 @@ document.getElementById('excel-btn').addEventListener('click', async function() 
     const blob = new Blob([byteArray], {{type: 'application/octet-stream'}});
     const file = new File([blob], '{filename}.xlsx', {{type: 'application/octet-stream'}});
     
+    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
     let isShared = false;
     
-    // 手機瀏覽器優先用原生分享選單
-    if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+    // 【只有手機】嘗試分享選單避免 Quick Look 卡住
+    if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
         try {{
             await navigator.share({{files: [file], title: '{filename}'}});
             isShared = true;
-        }} catch (e) {{ 
-            // 使用者取消分享或環境不支援 
-        }}
+        }} catch (e) {{ }}
     }}
     
-    // 電腦版或不支援分享 API 的備用下載方式
+    // 【電腦版】強制使用直接點擊下載模式
     if (!isShared) {{
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
@@ -381,6 +382,7 @@ document.getElementById('excel-btn').addEventListener('click', async function() 
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
+        
         document.getElementById('excel-result').innerText = '✅ Excel 已開始下載';
         setTimeout(() => URL.revokeObjectURL(url), 2000);
     }}
