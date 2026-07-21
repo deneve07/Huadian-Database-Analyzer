@@ -319,7 +319,7 @@ CAPTURE_HTML_TEMPLATE = """
             throw new Error('html2canvas 尚未載入完成，請確認網路連線後再試一次');
         }}
         return await html2canvas(target, {{
-            scale: 2,
+            scale: 4,
             backgroundColor: '#ffffff',
             windowWidth: target.scrollWidth,
             windowHeight: target.scrollHeight,
@@ -880,7 +880,7 @@ else:
                     filename_parts = [comp, combo, form, dose]
                     if vendor:
                         filename_parts.append(vendor)
-                    filename_parts.append("處方釋出率分析")
+                    filename_parts.append("醫院處方釋出率分析")
                     report_filename = "_".join(filename_parts)
 
                     summary_box_html = f"""
