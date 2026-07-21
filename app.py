@@ -293,18 +293,24 @@ CAPTURE_HTML_TEMPLATE = """
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<div style="text-align:center;">
-  <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
-    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<div style="display:flex; gap:10px;">
+  <button id="export-png-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
+    border-radius:6px;font-size:14px;cursor:pointer;">🖼️ 匯出 PNG 圖片</button>
+  <button id="export-pdf-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
+    border-radius:6px;font-size:14px;cursor:pointer;">📕 匯出 PDF</button>
 </div>
-<div id="result-area" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
-<div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
+<div id="result-area-{uid}" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
+<div id="capture-wrap-{uid}" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
-document.getElementById('export-btn').addEventListener('click', async function() {{
-    const resultArea = document.getElementById('result-area');
-    resultArea.innerText = '🔄 產生圖片中，請稍候...';
-    try {{
-        const target = document.getElementById('capture-wrap');
+(function() {{
+    const resultArea = document.getElementById('result-area-{uid}');
+    const pngBtn = document.getElementById('export-png-btn-{uid}');
+    const pdfBtn = document.getElementById('export-pdf-btn-{uid}');
+    let busy = false;
+
+    async function captureCanvas() {{
+        const target = document.getElementById('capture-wrap-{uid}');
         // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
         if (document.fonts && document.fonts.ready) {{
             await document.fonts.ready;
@@ -312,7 +318,7 @@ document.getElementById('export-btn').addEventListener('click', async function()
         if (typeof html2canvas === 'undefined') {{
             throw new Error('html2canvas 尚未載入完成，請確認網路連線後再試一次');
         }}
-        const canvas = await html2canvas(target, {{
+        return await html2canvas(target, {{
             scale: 2,
             backgroundColor: '#ffffff',
             windowWidth: target.scrollWidth,
@@ -321,9 +327,10 @@ document.getElementById('export-btn').addEventListener('click', async function()
             height: target.scrollHeight,
             useCORS: true
         }});
-        const blob = await new Promise(function(resolve) {{ canvas.toBlob(resolve, 'image/png'); }});
-        if (!blob) {{ throw new Error('圖片產生失敗 (canvas 轉換為空)'); }}
-        const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
+    }}
+
+    async function shareOrDownload(blob, filename, mime) {{
+        const file = new File([blob], filename, {{type: mime}});
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
             (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
@@ -331,8 +338,12 @@ document.getElementById('export-btn').addEventListener('click', async function()
             if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
                 // 注意：navigator.share 若同時帶入 files 與 title/text，iOS 選「儲存到檔案」
                 // 時會把 title 文字也另存成一個獨立的小型文字檔，因此這裡只傳 files。
-                await navigator.share({{files: [file]}});
-                resultArea.innerText = '✅ 已開啟分享選單';
+                try {{
+                    await navigator.share({{files: [file]}});
+                    resultArea.innerText = '✅ 已開啟分享選單';
+                }} catch (shareErr) {{
+                    // AbortError = 使用者按了取消，不視為錯誤
+                }}
             }} else {{
                 const url = URL.createObjectURL(blob);
                 resultArea.innerHTML =
@@ -340,22 +351,64 @@ document.getElementById('export-btn').addEventListener('click', async function()
                     "<img src='" + url + "' style='max-width:100%;border-radius:8px;border:1px solid #eee;margin-top:6px;' />";
             }}
         }} else {{
-            // 電腦版：單純直接下載，不觸發分享選單
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
             a.href = url;
-            a.download = '{filename}.png';
+            a.download = filename;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
+            setTimeout(function() {{ URL.revokeObjectURL(url); }}, 5000);
             resultArea.innerText = '✅ 已開始下載';
         }}
-    }} catch (err) {{
-        resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
     }}
-}});
+
+    pngBtn.addEventListener('click', async function() {{
+        if (busy) return;
+        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
+        resultArea.innerText = '🔄 產生圖片中，請稍候...';
+        try {{
+            const canvas = await captureCanvas();
+            const blob = await new Promise(function(resolve) {{ canvas.toBlob(resolve, 'image/png'); }});
+            if (!blob) {{ throw new Error('圖片產生失敗 (canvas 轉換為空)'); }}
+            await shareOrDownload(blob, '{filename}.png', 'image/png');
+        }} catch (err) {{
+            resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
+        }} finally {{
+            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
+        }}
+    }});
+
+    pdfBtn.addEventListener('click', async function() {{
+        if (busy) return;
+        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
+        resultArea.innerText = '🔄 產生 PDF 中，請稍候...';
+        try {{
+            if (typeof window.jspdf === 'undefined') {{
+                throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
+            }}
+            const canvas = await captureCanvas();
+            const imgData = canvas.toDataURL('image/png');
+            const {{ jsPDF }} = window.jspdf;
+            // 頁面尺寸直接比照截圖的像素尺寸，避免內容被裁切或需要另外計算縮放比例
+            const pdf = new jsPDF({{
+                orientation: canvas.width >= canvas.height ? 'landscape' : 'portrait',
+                unit: 'px',
+                format: [canvas.width, canvas.height]
+            }});
+            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+            const blob = pdf.output('blob');
+            await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
+        }} catch (err) {{
+            resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
+        }} finally {{
+            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
+        }}
+    }});
+}})();
 </script>
 """
+
 
 
 EXCEL_SHARE_HTML_TEMPLATE = """
@@ -494,7 +547,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
         header_texts.append(f"{year}\n{label}" if year else label)
     ws.append(header_texts)
     ws.row_dimensions[header_row].height = 48
-    ws.print_title_rows = f"{header_row}:{header_row}"
+    ws.print_title_rows = f"1:{header_row}"
 
     for c in range(1, len(headers) + 1):
         cell = ws.cell(row=header_row, column=c)
@@ -737,8 +790,8 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title),
-                            height=60,
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{re.sub(r'[^0-9A-Za-z_]', '_', dnd_key)}"),
+                            height=90,
                         )
                 elif not value_cols:
                     st.warning("⚠️ 請至少選擇一個要加總的數值欄位。")
@@ -855,6 +908,6 @@ else:
                         render_excel_share(excel_bytes, report_filename, uid="presc")
                     with dl_col2:
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename),
-                            height=60,
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc"),
+                            height=90,
                         )
