@@ -233,7 +233,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
 # 樣式化 HTML 預覽 (比照原系統的綠底標題、小計/總計配色)
 # ============================================================
 
-def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title):
+def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_html=""):
     extra_cols = set(pct_cols + growth_cols)
     display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
     headers = row_fields + display_cols
@@ -245,6 +245,7 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     html = [
         f"<div style='background:#FFFFFF;border-radius:10px;padding:18px;border:1px solid #eee;font-family:{font_family};'>",
         f"<h3 style='text-align:center;color:#004D40;margin-top:0;font-family:{font_family};'>{report_title}</h3>",
+        summary_html,
         "<div style='overflow-x:auto;'>",
         f"<table id='report-table' style='border-collapse:separate;border-spacing:0;width:100%;font-size:14px;font-family:{font_family};'>",
         "<tr>",
@@ -324,7 +325,7 @@ document.getElementById('export-btn').addEventListener('click', function() {{
 # Excel 匯出 (比照原系統的綠底標題、A4 橫式、標題列重複列印)
 # ============================================================
 
-def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, report_title):
+def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_lines=None):
     extra_cols = set(pct_cols + growth_cols)
     display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
     headers = row_fields + display_cols
@@ -349,6 +350,8 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
     font_b_w = Font(name="微軟正黑體", bold=True, color="FFFFFF", size=12)
     font_norm = Font(name="微軟正黑體", size=11)
     font_bold = Font(name="微軟正黑體", bold=True, size=11)
+    font_summary = Font(name="微軟正黑體", size=13, bold=True, color="333333")
+    font_rate = Font(name="微軟正黑體", size=15, bold=True, color="C00000")
     align_c = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_r = Alignment(horizontal="right", vertical="center")
     border_thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
@@ -358,7 +361,20 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(headers), 1))
     ws.cell(row=1, column=1).alignment = Alignment(horizontal="center")
 
-    header_row = 3
+    next_row = 3
+    if summary_lines:
+        for label, value, fmt in summary_lines:
+            ws.cell(row=next_row, column=1, value=label)
+            if value is not None:
+                cell = ws.cell(row=next_row, column=2, value=value)
+                if fmt:
+                    cell.number_format = fmt
+                    cell.font = font_rate if fmt == "0.00%" else font_summary
+            ws.cell(row=next_row, column=1).font = font_rate if (fmt == "0.00%") else font_summary
+            next_row += 1
+        next_row += 1  # 空一行
+
+    header_row = next_row
     ws.append([])
 
     header_texts = []
@@ -420,7 +436,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
 # 處方釋出率分析（固定格式）
 # ============================================================
 
-def analysis_prescription(df_filtered, vendor_name=None):
+def analysis_prescription(df_filtered, vendor_name=None, show_vendor=False):
     if df_filtered.empty:
         return None
     ds_hp_cond = (df_filtered["通路"] == "DS") & (df_filtered["層級別"].isin(["1.醫學中心", "2.區域醫院", "3.地區醫院"]))
@@ -429,7 +445,20 @@ def analysis_prescription(df_filtered, vendor_name=None):
     total_val = ds_hp_val + hp_val
     rate = (ds_hp_val / total_val * 100) if total_val > 0 else 0
     title = f"{vendor_name}_醫院處方釋出率(2024年)" if vendor_name else "整體醫院處方釋出率(2024年)"
-    return {"title": title, "ds_hp_val": ds_hp_val, "hp_val": hp_val, "total_val": total_val, "rate": rate}
+
+    row_fields = ["成分簡稱", "單複方", "劑型", "含量"]
+    if show_vendor and "廠商簡稱" in df_filtered.columns:
+        row_fields.append("廠商簡稱")
+    row_fields += ["通路", "層級別"]
+    row_fields = [f for f in row_fields if f in df_filtered.columns]
+    value_cols = [c for c in ["2022年申報量(顆)", "2023年申報量(顆)", "2024年申報量(顆)"] if c in df_filtered.columns]
+
+    rows, pct_cols, growth_cols = build_nested_rows(df_filtered, row_fields, ["通路"], value_cols, pct_years=[], add_growth=False)
+
+    return {
+        "title": title, "ds_hp_val": ds_hp_val, "hp_val": hp_val, "total_val": total_val, "rate": rate,
+        "rows": rows, "row_fields": row_fields, "value_cols": value_cols, "pct_cols": pct_cols, "growth_cols": growth_cols,
+    }
 
 
 # ============================================================
@@ -674,16 +703,14 @@ else:
                 if vendor:
                     df_f = df_f[df_f["廠商簡稱"] == vendor]
 
-                summary = analysis_prescription(df_f, vendor)
+                summary = analysis_prescription(df_f, vendor, bool(st.session_state.get("presc_show_vendor")))
                 if not summary:
                     st.error("❌ 找不到符合條件的資料。")
                 else:
-                    st.markdown(
-                        f"""
+                    summary_box_html = f"""
                         <div style='background-color:#E0F2F1; padding:20px; border-radius:10px;
-                            border-left: 6px solid #00695C;'>
-                            <h3 style='margin-top:0; color:#004D40;'>📊 {summary['title']}</h3>
-                            <ul style='font-size:18px; color:#004D40; list-style-type:none; padding-left:0; line-height:1.6;'>
+                            border-left: 6px solid #00695C; margin-bottom:16px;'>
+                            <ul style='font-size:18px; color:#004D40; list-style-type:none; padding-left:0; line-height:1.6; margin:0;'>
                                 <li><b>DS from HP：</b> {summary['ds_hp_val']:,.0f}</li>
                                 <li><b>HP：</b> {summary['hp_val']:,.0f}</li>
                                 <li><b>DS from HP + HP：</b> {summary['total_val']:,.0f}</li>
@@ -693,6 +720,38 @@ else:
                                     <span style='color:#D32F2F; font-weight:bold;'>{summary['rate']:.2f}%</span></li>
                             </ul>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
+                        """
+
+                    st.markdown("### 📄 報表即時預覽")
+                    table_html = build_html_table(
+                        summary["rows"], summary["row_fields"], summary["value_cols"],
+                        summary["pct_cols"], summary["growth_cols"], summary["title"], summary_box_html,
                     )
+                    st.markdown(table_html, unsafe_allow_html=True)
+
+                    st.markdown("### 📥 下載")
+                    dl_col1, dl_col2 = st.columns(2)
+                    with dl_col1:
+                        summary_lines = [
+                            ("DS from HP:", summary["ds_hp_val"], "#,##0"),
+                            ("HP:", summary["hp_val"], "#,##0"),
+                            ("DS from HP + HP:", summary["total_val"], "#,##0"),
+                            ("公式：處方釋出率 ＝ DS from HP ÷ (DS from HP + HP) × 100%", None, None),
+                            (f"{summary['title']}:", summary["rate"] / 100, "0.00%"),
+                        ]
+                        excel_bytes = generate_excel_bytes(
+                            summary["rows"], summary["row_fields"], summary["value_cols"],
+                            summary["pct_cols"], summary["growth_cols"], summary["title"], summary_lines,
+                        )
+                        st.download_button(
+                            "📄 下載 Excel 報表",
+                            data=excel_bytes,
+                            file_name=f"{summary['title']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                        )
+                    with dl_col2:
+                        components.html(
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=summary["title"]),
+                            height=60,
+                        )
