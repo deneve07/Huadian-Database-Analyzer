@@ -280,7 +280,7 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     return "".join(html)
 
 # ============================================================
-# ✅ 修正版 HTML & 下載按鈕範本 (嚴格區分手機與電腦)
+# HTML 圖片下載按鈕範本 (僅保留圖片匯出，Excel 改回原生)
 # ============================================================
 
 CAPTURE_HTML_TEMPLATE = """
@@ -317,18 +317,14 @@ document.getElementById('export-btn').addEventListener('click', async function()
         const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
         let isShared = false;
         
-        // 【只有手機】才嘗試使用原生分享選單，避免電腦版跳出不必要的分享視窗
         if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
             try {{
                 await navigator.share({{files: [file], title: '{filename}'}});
                 resultArea.innerHTML = "";
                 isShared = true;
-            }} catch (e) {{ 
-                // 使用者取消
-            }}
+            }} catch (e) {{ }}
         }}
         
-        // 【電腦版】或手機分享失敗時，強制使用直接點擊下載模式 (同 0721-1 原本行為)
         if (!isShared) {{
             const url = URL.createObjectURL(blob);
             const a = document.createElement('a');
@@ -345,51 +341,6 @@ document.getElementById('export-btn').addEventListener('click', async function()
 }});
 </script>
 """
-
-EXCEL_SHARE_TEMPLATE = """
-<div style="text-align:center;">
-  <button id="excel-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
-    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📄 下載 Excel 報表</button>
-</div>
-<div id="excel-result" style="margin-top:8px;font-size:12px;color:#00695C;text-align:center;"></div>
-<script>
-document.getElementById('excel-btn').addEventListener('click', async function() {{
-    const b64 = '{b64_data}';
-    const byteChars = atob(b64);
-    const byteNumbers = new Array(byteChars.length);
-    for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
-    const byteArray = new Uint8Array(byteNumbers);
-    const blob = new Blob([byteArray], {{type: 'application/octet-stream'}});
-    const file = new File([blob], '{filename}.xlsx', {{type: 'application/octet-stream'}});
-    
-    const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-    let isShared = false;
-    
-    // 【只有手機】嘗試分享選單避免 Quick Look 卡住
-    if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
-        try {{
-            await navigator.share({{files: [file], title: '{filename}'}});
-            isShared = true;
-        }} catch (e) {{ }}
-    }}
-    
-    // 【電腦版】強制使用直接點擊下載模式
-    if (!isShared) {{
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = '{filename}.xlsx';
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        
-        document.getElementById('excel-result').innerText = '✅ Excel 已開始下載';
-        setTimeout(() => URL.revokeObjectURL(url), 2000);
-    }}
-}});
-</script>
-"""
-
 
 # ============================================================
 # Excel 匯出
@@ -506,7 +457,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
 # 處方釋出率分析（固定格式）
 # ============================================================
 
-def analysis_prescription(df_filtered, vendor_name=None, show_vendor=False):
+def analysis_prescription(df_filtered, show_vendor=False, title_prefix=""):
     if df_filtered.empty:
         return None
     ds_hp_cond = (df_filtered["通路"] == "DS") & (df_filtered["層級別"].isin(["1.醫學中心", "2.區域醫院", "3.地區醫院"]))
@@ -514,7 +465,9 @@ def analysis_prescription(df_filtered, vendor_name=None, show_vendor=False):
     hp_val = df_filtered[df_filtered["通路"] == "HP"]["2024年申報量(顆)"].sum()
     total_val = ds_hp_val + hp_val
     rate = (ds_hp_val / total_val * 100) if total_val > 0 else 0
-    title = f"{vendor_name}_醫院處方釋出率(2024年)" if vendor_name else "整體醫院處方釋出率(2024年)"
+    
+    # 使用傳入的 title_prefix 作為檔名主體
+    title = f"{title_prefix}_醫院處方釋出率(2024年)"
 
     row_fields = ["成分簡稱", "單複方", "劑型", "含量"]
     if show_vendor and "廠商簡稱" in df_filtered.columns:
@@ -687,10 +640,12 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     dl_col1, dl_col2 = st.columns(2)
                     with dl_col1:
                         excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
-                        b64_excel = base64.b64encode(excel_bytes).decode()
-                        components.html(
-                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=report_title),
-                            height=60,
+                        st.download_button(
+                            label="📄 下載 Excel 報表",
+                            data=excel_bytes,
+                            file_name=f"{report_title}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
                         )
                     with dl_col2:
                         components.html(
@@ -763,7 +718,15 @@ else:
                 if vendor:
                     df_f = df_f[df_f["廠商簡稱"] == vendor]
 
-                summary = analysis_prescription(df_f, vendor, bool(st.session_state.get("presc_show_vendor")))
+                # 組合檔名標題資訊
+                prefix_parts = [comp]
+                if combo: prefix_parts.append(combo)
+                if form: prefix_parts.append(form)
+                if dose: prefix_parts.append(dose)
+                if vendor: prefix_parts.append(vendor)
+                title_prefix = "_".join(prefix_parts)
+
+                summary = analysis_prescription(df_f, bool(st.session_state.get("presc_show_vendor")), title_prefix)
                 if not summary:
                     st.error("❌ 找不到符合條件的資料。")
                 else:
@@ -803,10 +766,13 @@ else:
                             summary["rows"], summary["row_fields"], summary["value_cols"],
                             summary["pct_cols"], summary["growth_cols"], summary["title"], summary_lines,
                         )
-                        b64_excel = base64.b64encode(excel_bytes).decode()
-                        components.html(
-                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=summary["title"]),
-                            height=60,
+                        # 改回使用 Streamlit 原生的下載按鈕
+                        st.download_button(
+                            label="📄 下載 Excel 報表",
+                            data=excel_bytes,
+                            file_name=f"{summary['title']}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
                         )
                     with dl_col2:
                         components.html(
