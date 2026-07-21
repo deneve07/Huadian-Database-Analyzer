@@ -47,6 +47,8 @@ def load_data(path: str) -> pd.DataFrame:
         if os.path.exists(parquet_path):
             df = pd.read_parquet(parquet_path)
         else:
+            # utf-8-sig 可自動去除 Excel 匯出 CSV 常見的 BOM 字元，
+            # 否則第一欄欄名容易變成「\ufeff成分簡稱」導致 KeyError
             df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
     except Exception:
         return pd.DataFrame()
@@ -76,12 +78,14 @@ def parse_dosage(d):
 
 
 def order_display_cols(value_cols, pct_cols, growth_cols):
+    """Req 4：占比要接在申報量後面 (金額之前)，而不是放在所有數值欄位最後"""
     qty_cols = [c for c in value_cols if "申報量" in c]
     other_cols = [c for c in value_cols if c not in qty_cols]
     return qty_cols + pct_cols + other_cols + growth_cols
 
 
 def pretty_header(col: str):
+    """把 '2022年申報量(顆)' 拆成 ('2022年','申報量')；'2022-2023年成長率(%)' 拆成 ('2022-2023年','成長率(%)')"""
     m = re.match(r"^(\d{4}(-\d{4})?年)(.+)$", col)
     if m:
         year = m.group(1)
@@ -96,6 +100,8 @@ def pretty_header(col: str):
 
 def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list, value_cols: list,
                        pct_years: list = None, add_growth: bool = False):
+    # 先依「報表欄位」的組合彙總數值，確保同一個欄位組合 (例如同一家廠商) 只會出現一列，
+    # 而不是把資料集裡每一筆原始紀錄 (可能還有藥品名稱、藥證字號等未顯示的欄位差異) 都個別列出來
     df = df.groupby(row_fields, as_index=False)[value_cols].sum()
 
     qty_cols = [c for c in value_cols if "申報量" in c]
@@ -119,7 +125,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
         return extra
 
     def compute_extra_for_group(totals):
-        extra = {c: 1.0 for c in pct_cols}
+        extra = {c: 1.0 for c in pct_cols}  # 小計/總計列本身佔比恆為 100%
         for c in growth_cols:
             y1 = c[:4]
             y2 = c[5:9]
@@ -134,6 +140,8 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
     temp_sort_cols = []
     for col in subtotal_fields:
         if col == "含量":
+            # 含量欄位需依實際劑量數值排序 (例如 12mg/ml < 24mg/ml < 100mg/ml)，
+            # 而非把它當一般文字做字母排序 (那樣 "100mg/ml" 會排到 "12mg/ml" 前面)
             tmp_col = "__sortkey_含量"
             df[tmp_col] = df[col].map(parse_dosage)
             sort_cols.append(tmp_col)
@@ -223,7 +231,7 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
 
 
 # ============================================================
-# 樣式化 HTML 預覽 
+# 樣式化 HTML 預覽 (比照原系統的綠底標題、小計/總計配色)
 # ============================================================
 
 def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_html=""):
@@ -279,9 +287,6 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     html.append("</table></div></div>")
     return "".join(html)
 
-# ============================================================
-# HTML 圖片下載按鈕範本 (僅保留圖片匯出，Excel 改回原生)
-# ============================================================
 
 CAPTURE_HTML_TEMPLATE = """
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -292,14 +297,13 @@ CAPTURE_HTML_TEMPLATE = """
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
     border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
 </div>
-<div id="result-area" style="margin-top:8px;font-size:12px;color:#00695C;text-align:center;"></div>
+<div id="result-area" style="margin-top:10px;"></div>
 <div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
 document.getElementById('export-btn').addEventListener('click', async function() {{
     const target = document.getElementById('capture-wrap');
     const resultArea = document.getElementById('result-area');
-    resultArea.innerHTML = "圖片產生中，請稍候...";
-    
+    // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
     await document.fonts.ready;
     const canvas = await html2canvas(target, {{
         scale: 2,
@@ -309,41 +313,61 @@ document.getElementById('export-btn').addEventListener('click', async function()
         width: target.scrollWidth,
         height: target.scrollHeight
     }});
-    
     canvas.toBlob(async function(blob) {{
         const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
-        
-        // 嚴格偵測是否為手機裝置 (iPhone, iPad, Android)
-        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
-        let isShared = false;
-        
-        if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
+        // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存影像」到相簿，不會卡在預覽畫面出不去
+        if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
             try {{
                 await navigator.share({{files: [file], title: '{filename}'}});
-                resultArea.innerHTML = "";
-                isShared = true;
-            }} catch (e) {{ }}
+                return;
+            }} catch (e) {{ /* 使用者取消分享，改用備用方式 */ }}
         }}
-        
-        if (!isShared) {{
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '{filename}.png';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            
-            resultArea.innerHTML = '✅ 圖片已開始下載';
-            setTimeout(() => URL.revokeObjectURL(url), 2000);
-        }}
+        const url = URL.createObjectURL(blob);
+        resultArea.innerHTML =
+            "<p style='font-size:13px;color:#00695C;margin:8px 0;'>長按下方圖片，選擇「儲存影像」即可存入相簿</p>" +
+            "<img src='" + url + "' style='max-width:100%;border-radius:8px;border:1px solid #eee;' />";
     }}, 'image/png');
 }});
 </script>
 """
 
+EXCEL_SHARE_TEMPLATE = """
+<div style="text-align:center;">
+  <button id="excel-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📄 下載 Excel 報表</button>
+</div>
+<div id="excel-result" style="margin-top:8px;font-size:12px;color:#00695C;text-align:center;"></div>
+<script>
+document.getElementById('excel-btn').addEventListener('click', async function() {{
+    const b64 = '{b64_data}';
+    const byteChars = atob(b64);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], {{type: 'application/octet-stream'}});
+    const file = new File([blob], '{filename}.xlsx', {{type: 'application/octet-stream'}});
+    // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存到檔案」，不會跳出 Quick Look 預覽卡住
+    if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+        try {{
+            await navigator.share({{files: [file], title: '{filename}'}});
+            return;
+        }} catch (e) {{ /* 使用者取消分享，改用備用下載方式 */ }}
+    }}
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '{filename}.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    document.getElementById('excel-result').innerText = '已開始下載';
+}});
+</script>
+"""
+
+
 # ============================================================
-# Excel 匯出
+# Excel 匯出 (比照原系統的綠底標題、A4 橫式、標題列重複列印)
 # ============================================================
 
 def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_lines=None):
@@ -393,7 +417,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
                     cell.font = font_rate if fmt == "0.00%" else font_summary
             ws.cell(row=next_row, column=1).font = font_rate if (fmt == "0.00%") else font_summary
             next_row += 1
-        next_row += 1
+        next_row += 1  # 空一行
 
     header_row = next_row
     ws.append([])
@@ -457,7 +481,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
 # 處方釋出率分析（固定格式）
 # ============================================================
 
-def analysis_prescription(df_filtered, show_vendor=False, title_prefix=""):
+def analysis_prescription(df_filtered, vendor_name=None, show_vendor=False):
     if df_filtered.empty:
         return None
     ds_hp_cond = (df_filtered["通路"] == "DS") & (df_filtered["層級別"].isin(["1.醫學中心", "2.區域醫院", "3.地區醫院"]))
@@ -465,9 +489,7 @@ def analysis_prescription(df_filtered, show_vendor=False, title_prefix=""):
     hp_val = df_filtered[df_filtered["通路"] == "HP"]["2024年申報量(顆)"].sum()
     total_val = ds_hp_val + hp_val
     rate = (ds_hp_val / total_val * 100) if total_val > 0 else 0
-    
-    # 使用傳入的 title_prefix 作為檔名主體
-    title = f"{title_prefix}_醫院處方釋出率(2024年)"
+    title = f"{vendor_name}_醫院處方釋出率(2024年)" if vendor_name else "整體醫院處方釋出率(2024年)"
 
     row_fields = ["成分簡稱", "單複方", "劑型", "含量"]
     if show_vendor and "廠商簡稱" in df_filtered.columns:
@@ -515,6 +537,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
         st.error(f"資料檔案缺少「成分簡稱」欄位，實際欄位為：{list(df_raw.columns)}")
     else:
         comp_options = sorted([c for c in df_raw["成分簡稱"].dropna().unique() if c])
+        # 單一元件即支援輸入時自動篩選（Streamlit multiselect 內建 type-to-search）
         comps_selected = st.multiselect(
             "第2步：輸入關鍵字並選擇成分品項 (必選)",
             options=comp_options,
@@ -538,6 +561,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
             if state_key not in st.session_state:
                 st.session_state[state_key] = {"available": dim_cols_all, "selected": []}
             else:
+                # 換了成分/分析功能等情境下，欄位清單內容可能改變，這裡做防呆同步
                 prev = st.session_state[state_key]
                 avail = [c for c in prev["available"] if c in dim_cols_all]
                 sel = [c for c in prev["selected"] if c in dim_cols_all]
@@ -568,6 +592,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                 st.markdown("### 🔍 第4步：逐欄篩選與合計 (點欄位下方的「🔽 篩選 / 合計」展開設定；如同 Excel 欄篩選)")
                 st.caption("💡 篩選會彼此連動：某欄位選擇後，其他欄位只會列出仍有對應資料的選項，避免篩出不存在的組合。")
 
+                # 先讀取目前各欄位已選的篩選值 (用於彼此連動縮小可選範圍)
                 current_filters = {}
                 for f in row_fields:
                     key = f"filt_{dnd_key}_{f}"
@@ -581,6 +606,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     with filter_ui_cols[i]:
                         st.markdown(f"**{f}**")
                         with st.expander("🔽 篩選 / 合計", expanded=False):
+                            # 依其他欄位目前的篩選結果，動態縮小此欄位可選項目
                             df_scope = df_comp
                             for other_col, other_sel in current_filters.items():
                                 if other_col != f and other_sel:
@@ -588,6 +614,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                             options = sorted([v for v in df_scope[f].dropna().unique() if str(v).strip() != ""])
 
                             key = f"filt_{dnd_key}_{f}"
+                            # 若其他欄位變動導致此欄位先前選的值已不存在，先清掉避免元件報錯
                             if key in st.session_state:
                                 st.session_state[key] = [v for v in st.session_state[key] if v in options]
 
@@ -619,6 +646,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     )
                     add_growth = st.checkbox("➕ 加入年度成長率(%)", value=False, disabled=not has_qty, key=f"growth_{dnd_key}")
 
+                # Req 7：檔名納入成分與所有篩選項目
                 filename_parts = list(comps_selected)
                 for col in row_fields:
                     if col in filters:
@@ -640,14 +668,14 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     dl_col1, dl_col2 = st.columns(2)
                     with dl_col1:
                         excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
-                        st.download_button(
-                            label="📄 下載 Excel 報表",
-                            data=excel_bytes,
-                            file_name=f"{report_title}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
+                        b64_excel = base64.b64encode(excel_bytes).decode()
+                        components.html(
+                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=report_title),
+                            height=60,
                         )
                     with dl_col2:
+                        # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
+                        # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
                             CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title),
                             height=60,
@@ -718,15 +746,7 @@ else:
                 if vendor:
                     df_f = df_f[df_f["廠商簡稱"] == vendor]
 
-                # 組合檔名標題資訊
-                prefix_parts = [comp]
-                if combo: prefix_parts.append(combo)
-                if form: prefix_parts.append(form)
-                if dose: prefix_parts.append(dose)
-                if vendor: prefix_parts.append(vendor)
-                title_prefix = "_".join(prefix_parts)
-
-                summary = analysis_prescription(df_f, bool(st.session_state.get("presc_show_vendor")), title_prefix)
+                summary = analysis_prescription(df_f, vendor, bool(st.session_state.get("presc_show_vendor")))
                 if not summary:
                     st.error("❌ 找不到符合條件的資料。")
                 else:
@@ -766,13 +786,10 @@ else:
                             summary["rows"], summary["row_fields"], summary["value_cols"],
                             summary["pct_cols"], summary["growth_cols"], summary["title"], summary_lines,
                         )
-                        # 改回使用 Streamlit 原生的下載按鈕
-                        st.download_button(
-                            label="📄 下載 Excel 報表",
-                            data=excel_bytes,
-                            file_name=f"{summary['title']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
+                        b64_excel = base64.b64encode(excel_bytes).decode()
+                        components.html(
+                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=summary["title"]),
+                            height=60,
                         )
                     with dl_col2:
                         components.html(
