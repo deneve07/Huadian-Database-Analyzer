@@ -390,13 +390,27 @@ CAPTURE_HTML_TEMPLATE = """
             const canvas = await captureCanvas();
             const imgData = canvas.toDataURL('image/png');
             const {{ jsPDF }} = window.jspdf;
-            // 頁面尺寸直接比照截圖的像素尺寸，避免內容被裁切或需要另外計算縮放比例
+            // 固定 A4 橫式頁面，圖片等比例縮放後置中，避免內容被裁切或變形
             const pdf = new jsPDF({{
-                orientation: canvas.width >= canvas.height ? 'landscape' : 'portrait',
-                unit: 'px',
-                format: [canvas.width, canvas.height]
+                orientation: 'landscape',
+                unit: 'mm',
+                format: 'a4'
             }});
-            pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+            const pageWidth = pdf.internal.pageSize.getWidth();
+            const pageHeight = pdf.internal.pageSize.getHeight();
+            const margin = 10; // mm
+            const maxWidth = pageWidth - margin * 2;
+            const maxHeight = pageHeight - margin * 2;
+            const imgRatio = canvas.width / canvas.height;
+            let drawWidth = maxWidth;
+            let drawHeight = drawWidth / imgRatio;
+            if (drawHeight > maxHeight) {{
+                drawHeight = maxHeight;
+                drawWidth = drawHeight * imgRatio;
+            }}
+            const offsetX = (pageWidth - drawWidth) / 2;
+            const offsetY = (pageHeight - drawHeight) / 2;
+            pdf.addImage(imgData, 'PNG', offsetX, offsetY, drawWidth, drawHeight);
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
         }} catch (err) {{
@@ -866,7 +880,7 @@ else:
                     filename_parts = [comp, combo, form, dose]
                     if vendor:
                         filename_parts.append(vendor)
-                    filename_parts.append("醫院處方釋出率分析")
+                    filename_parts.append("處方釋出率分析")
                     report_filename = "_".join(filename_parts)
 
                     summary_box_html = f"""
