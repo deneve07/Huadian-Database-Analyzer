@@ -17,6 +17,7 @@
 import re
 import io
 import os
+import base64
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -296,26 +297,70 @@ CAPTURE_HTML_TEMPLATE = """
   <button id="export-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
     border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出為 PNG 圖片</button>
 </div>
+<div id="result-area" style="margin-top:10px;"></div>
 <div id="capture-wrap" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
 <script>
-document.getElementById('export-btn').addEventListener('click', function() {{
+document.getElementById('export-btn').addEventListener('click', async function() {{
     const target = document.getElementById('capture-wrap');
+    const resultArea = document.getElementById('result-area');
     // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
-    document.fonts.ready.then(function() {{
-        html2canvas(target, {{
-            scale: 2,
-            backgroundColor: '#ffffff',
-            windowWidth: target.scrollWidth,
-            windowHeight: target.scrollHeight,
-            width: target.scrollWidth,
-            height: target.scrollHeight
-        }}).then(function(canvas) {{
-            const link = document.createElement('a');
-            link.download = '{filename}.png';
-            link.href = canvas.toDataURL('image/png');
-            link.click();
-        }});
+    await document.fonts.ready;
+    const canvas = await html2canvas(target, {{
+        scale: 2,
+        backgroundColor: '#ffffff',
+        windowWidth: target.scrollWidth,
+        windowHeight: target.scrollHeight,
+        width: target.scrollWidth,
+        height: target.scrollHeight
     }});
+    canvas.toBlob(async function(blob) {{
+        const file = new File([blob], '{filename}.png', {{type: 'image/png'}});
+        // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存影像」到相簿，不會卡在預覽畫面出不去
+        if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+            try {{
+                await navigator.share({{files: [file], title: '{filename}'}});
+                return;
+            }} catch (e) {{ /* 使用者取消分享，改用備用方式 */ }}
+        }}
+        const url = URL.createObjectURL(blob);
+        resultArea.innerHTML =
+            "<p style='font-size:13px;color:#00695C;margin:8px 0;'>長按下方圖片，選擇「儲存影像」即可存入相簿</p>" +
+            "<img src='" + url + "' style='max-width:100%;border-radius:8px;border:1px solid #eee;' />";
+    }}, 'image/png');
+}});
+</script>
+"""
+
+EXCEL_SHARE_TEMPLATE = """
+<div style="text-align:center;">
+  <button id="excel-btn" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📄 下載 Excel 報表</button>
+</div>
+<div id="excel-result" style="margin-top:8px;font-size:12px;color:#00695C;text-align:center;"></div>
+<script>
+document.getElementById('excel-btn').addEventListener('click', async function() {{
+    const b64 = '{b64_data}';
+    const byteChars = atob(b64);
+    const byteNumbers = new Array(byteChars.length);
+    for (let i = 0; i < byteChars.length; i++) {{ byteNumbers[i] = byteChars.charCodeAt(i); }}
+    const byteArray = new Uint8Array(byteNumbers);
+    const blob = new Blob([byteArray], {{type: 'application/octet-stream'}});
+    const file = new File([blob], '{filename}.xlsx', {{type: 'application/octet-stream'}});
+    // 手機瀏覽器優先用原生分享選單，直接一鍵「儲存到檔案」，不會跳出 Quick Look 預覽卡住
+    if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+        try {{
+            await navigator.share({{files: [file], title: '{filename}'}});
+            return;
+        }} catch (e) {{ /* 使用者取消分享，改用備用下載方式 */ }}
+    }}
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = '{filename}.xlsx';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    document.getElementById('excel-result').innerText = '已開始下載';
 }});
 </script>
 """
@@ -623,12 +668,10 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     dl_col1, dl_col2 = st.columns(2)
                     with dl_col1:
                         excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
-                        st.download_button(
-                            "📄 下載 Excel 報表",
-                            data=excel_bytes,
-                            file_name=f"{report_title}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
+                        b64_excel = base64.b64encode(excel_bytes).decode()
+                        components.html(
+                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=report_title),
+                            height=60,
                         )
                     with dl_col2:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
@@ -743,12 +786,10 @@ else:
                             summary["rows"], summary["row_fields"], summary["value_cols"],
                             summary["pct_cols"], summary["growth_cols"], summary["title"], summary_lines,
                         )
-                        st.download_button(
-                            "📄 下載 Excel 報表",
-                            data=excel_bytes,
-                            file_name=f"{summary['title']}.xlsx",
-                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            use_container_width=True,
+                        b64_excel = base64.b64encode(excel_bytes).decode()
+                        components.html(
+                            EXCEL_SHARE_TEMPLATE.format(b64_data=b64_excel, filename=summary["title"]),
+                            height=60,
                         )
                     with dl_col2:
                         components.html(
