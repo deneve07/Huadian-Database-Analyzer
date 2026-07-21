@@ -388,13 +388,16 @@ CAPTURE_HTML_TEMPLATE = """
                 throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
             }}
             const canvas = await captureCanvas();
-            const imgData = canvas.toDataURL('image/png');
+            // PDF 內嵌圖片改用 JPEG 壓縮 (品質 0.92)，而非無失真 PNG，
+            // 可大幅縮小 PDF 檔案體積 (表格文字仍清晰，僅色階做輕微壓縮)
+            const imgData = canvas.toDataURL('image/jpeg', 0.92);
             const {{ jsPDF }} = window.jspdf;
             // 固定 A4 橫式頁面，圖片等比例縮放後置中，避免內容被裁切或變形
             const pdf = new jsPDF({{
                 orientation: 'landscape',
                 unit: 'mm',
-                format: 'a4'
+                format: 'a4',
+                compress: true
             }});
             const pageWidth = pdf.internal.pageSize.getWidth();
             const pageHeight = pdf.internal.pageSize.getHeight();
@@ -410,7 +413,7 @@ CAPTURE_HTML_TEMPLATE = """
             }}
             const offsetX = (pageWidth - drawWidth) / 2;
             const offsetY = margin;
-            pdf.addImage(imgData, 'PNG', offsetX, offsetY, drawWidth, drawHeight);
+            pdf.addImage(imgData, 'JPEG', offsetX, offsetY, drawWidth, drawHeight, undefined, 'MEDIUM');
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
         }} catch (err) {{
