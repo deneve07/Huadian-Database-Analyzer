@@ -329,7 +329,9 @@ document.getElementById('export-btn').addEventListener('click', async function()
 
         if (isMobile) {{
             if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
-                await navigator.share({{files: [file], title: '{filename}'}});
+                // 注意：navigator.share 若同時帶入 files 與 title/text，iOS 選「儲存到檔案」
+                // 時會把 title 文字也另存成一個獨立的小型文字檔，因此這裡只傳 files。
+                await navigator.share({{files: [file]}});
                 resultArea.innerText = '✅ 已開啟分享選單';
             }} else {{
                 const url = URL.createObjectURL(blob);
@@ -361,31 +363,40 @@ EXCEL_SHARE_HTML_TEMPLATE = """
   <button id="excel-share-btn-{uid}" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
     border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📄 下載 / 分享 Excel 報表</button>
 </div>
-<div id="excel-result-area-{uid}" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
 <script>
-document.getElementById('excel-share-btn-{uid}').addEventListener('click', async function() {{
-    const resultArea = document.getElementById('excel-result-area-{uid}');
-    resultArea.innerText = '🔄 準備檔案中，請稍候...';
-    try {{
-        const b64 = "{b64data}";
-        const byteChars = atob(b64);
-        const byteNumbers = new Array(byteChars.length);
-        for (let i = 0; i < byteChars.length; i++) {{
-            byteNumbers[i] = byteChars.charCodeAt(i);
-        }}
-        const byteArray = new Uint8Array(byteNumbers);
-        const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-        const blob = new Blob([byteArray], {{type: mime}});
-        const file = new File([blob], '{filename}.xlsx', {{type: mime}});
-        const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
-            (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+(function() {{
+    const btn = document.getElementById('excel-share-btn-{uid}');
+    let busy = false;  // 防止使用者連點，或分享流程尚未結束前重複觸發，導致產生兩個檔案
+    btn.addEventListener('click', async function() {{
+        if (busy) return;
+        busy = true;
+        btn.disabled = true;
+        try {{
+            const b64 = "{b64data}";
+            const byteChars = atob(b64);
+            const byteNumbers = new Array(byteChars.length);
+            for (let i = 0; i < byteChars.length; i++) {{
+                byteNumbers[i] = byteChars.charCodeAt(i);
+            }}
+            const byteArray = new Uint8Array(byteNumbers);
+            const mime = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+            const blob = new Blob([byteArray], {{type: mime}});
+            const file = new File([blob], '{filename}.xlsx', {{type: mime}});
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 
-        if (isMobile) {{
-            if (navigator.canShare && navigator.canShare({{files: [file]}})) {{
+            if (isMobile && navigator.canShare && navigator.canShare({{files: [file]}})) {{
                 // 用系統分享面板取代 <a download>，避免 iOS 加入主畫面的 App
-                // 因為缺少瀏覽器介面（無上一頁鍵）而卡在 Quick Look 檔案預覽畫面出不去
-                await navigator.share({{files: [file], title: '{filename}'}});
-                resultArea.innerText = '✅ 已開啟分享選單，選「儲存到檔案」即可下載';
+                // 因為缺少瀏覽器介面（無上一頁鍵）而卡在 Quick Look 檔案預覽畫面出不去。
+                // 注意：若同時帶入 files 與 title，iOS 選「儲存到檔案」時會把 title 文字
+                // 也另存成一個獨立的小型文字檔 (曾實際出現 47 byte 的「文字」檔)，
+                // 因此這裡只傳 files，不帶 title。
+                // 使用者若在分享面板中直接取消，不做任何提示、也不會留下任何檔案。
+                try {{
+                    await navigator.share({{files: [file]}});
+                }} catch (shareErr) {{
+                    // AbortError = 使用者按了取消，不需視為錯誤、也不顯示任何訊息
+                }}
             }} else {{
                 const url = URL.createObjectURL(blob);
                 const a = document.createElement('a');
@@ -394,22 +405,14 @@ document.getElementById('excel-share-btn-{uid}').addEventListener('click', async
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
-                resultArea.innerText = '✅ 已開始下載';
+                setTimeout(function() {{ URL.revokeObjectURL(url); }}, 5000);
             }}
-        }} else {{
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = '{filename}.xlsx';
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            resultArea.innerText = '✅ 已開始下載';
+        }} finally {{
+            busy = false;
+            btn.disabled = false;
         }}
-    }} catch (err) {{
-        resultArea.innerText = '❌ 失敗：' + (err && err.message ? err.message : err);
-    }}
-}});
+    }});
+}})();
 </script>
 """
 
@@ -417,12 +420,13 @@ document.getElementById('excel-share-btn-{uid}').addEventListener('click', async
 def render_excel_share(excel_bytes: bytes, filename: str, uid: str):
     """以分享面板 (navigator.share) 方式提供 Excel 下載，避免 iOS 加入主畫面
     (standalone PWA) 因缺少瀏覽器導覽列，下載後卡在 Quick Look 檔案預覽頁面
-    卻無法返回 App 的問題。"""
+    卻無法返回 App 的問題。不顯示任何下載/分享狀態文字；並以 busy flag 防止
+    重複觸發造成產生兩個檔案。"""
     b64data = base64.b64encode(excel_bytes).decode()
     safe_uid = re.sub(r"[^0-9A-Za-z_]", "_", uid)
     components.html(
         EXCEL_SHARE_HTML_TEMPLATE.format(b64data=b64data, filename=filename, uid=safe_uid),
-        height=70,
+        height=50,
     )
 
 
@@ -809,7 +813,7 @@ else:
                     filename_parts = [comp, combo, form, dose]
                     if vendor:
                         filename_parts.append(vendor)
-                    filename_parts.append("處方釋出率分析")
+                    filename_parts.append("醫院處方釋出率分析")
                     report_filename = "_".join(filename_parts)
 
                     summary_box_html = f"""
