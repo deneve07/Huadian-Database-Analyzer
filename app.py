@@ -240,7 +240,7 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
     headers = row_fields + display_cols
 
     font_family = "'Microsoft JhengHei', 'Noto Sans TC', 'PingFang TC', 'Heiti TC', 'Microsoft YaHei', Arial, sans-serif"
-    th_style = f"color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #FFFFFF;padding:8px 10px;font-weight:bold;font-family:{font_family};"
+    th_style = f"color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #D9D9D9;padding:8px 10px;font-weight:bold;font-family:{font_family};"
     td_style = f"border:1px solid #D9D9D9;padding:6px 10px;font-family:{font_family};"
 
     html = [
@@ -409,7 +409,7 @@ CAPTURE_HTML_TEMPLATE = """
                 drawWidth = drawHeight * imgRatio;
             }}
             const offsetX = (pageWidth - drawWidth) / 2;
-            const offsetY = (pageHeight - drawHeight) / 2;
+            const offsetY = margin;
             pdf.addImage(imgData, 'PNG', offsetX, offsetY, drawWidth, drawHeight);
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
@@ -531,7 +531,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
     align_c = Alignment(horizontal="center", vertical="center", wrap_text=True)
     align_r = Alignment(horizontal="right", vertical="center")
     border_thin = Border(*[Side(style="thin", color="D9D9D9")] * 4)
-    header_border = Border(*[Side(style="thin", color="FFFFFF")] * 4)
+    header_border = Border(*[Side(style="thin", color="D9D9D9")] * 4)
 
     ws.cell(row=1, column=1, value=report_title).font = font_title
     ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max(len(headers), 1))
