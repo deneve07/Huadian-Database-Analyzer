@@ -392,10 +392,11 @@ CAPTURE_HTML_TEMPLATE = """
             // 可大幅縮小 PDF 檔案體積 (表格文字仍清晰，僅色階做輕微壓縮)
             const imgData = canvas.toDataURL('image/jpeg', 0.92);
             const {{ jsPDF }} = window.jspdf;
-            // 固定 A4 橫式頁面；優先讓內容鋪滿整個可印刷區域 (符合頁面)，
-            // 僅在長寬比例與頁面差異過大時才退回等比例縮放，避免內容被拉伸到明顯變形
+            // 固定 A4 頁面 (方向依報表類型傳入 pdf_orientation：橫式或直式)。在「完全等比例 (可能留白較多)」與「完全鋪滿 (可能變形)」
+            // 之間取中間值 (alpha=0.5)：先算出完全鋪滿所需的水平/垂直縮放比例，
+            // 再各自往等比例縮放的方向拉回一半，讓留白變少、但文字不會被拉伸得太明顯
             const pdf = new jsPDF({{
-                orientation: 'landscape',
+                orientation: '{pdf_orientation}',
                 unit: 'mm',
                 format: 'a4',
                 compress: true
@@ -405,27 +406,19 @@ CAPTURE_HTML_TEMPLATE = """
             const margin = 10; // mm
             const maxWidth = pageWidth - margin * 2;
             const maxHeight = pageHeight - margin * 2;
-            const imgRatio = canvas.width / canvas.height;
-            const pageRatio = maxWidth / maxHeight;
-            // 若鋪滿頁面所需的水平/垂直拉伸比例相差在可接受範圍內 (0.6~1.6 倍)，就直接鋪滿；
-            // 差異過大 (例如內容極窄極長) 才改回等比例縮放，避免明顯變形
-            const stretchFactor = imgRatio / pageRatio;
-            let drawWidth, drawHeight, offsetX, offsetY;
-            if (stretchFactor >= 0.6 && stretchFactor <= 1.6) {{
-                drawWidth = maxWidth;
-                drawHeight = maxHeight;
-                offsetX = margin;
-                offsetY = margin;
-            }} else {{
-                drawWidth = maxWidth;
-                drawHeight = drawWidth / imgRatio;
-                if (drawHeight > maxHeight) {{
-                    drawHeight = maxHeight;
-                    drawWidth = drawHeight * imgRatio;
-                }}
-                offsetX = (pageWidth - drawWidth) / 2;
-                offsetY = margin;
-            }}
+
+            const scaleWFill = maxWidth / canvas.width;   // 水平完全鋪滿所需縮放比例
+            const scaleHFill = maxHeight / canvas.height;  // 垂直完全鋪滿所需縮放比例
+            const scaleContain = Math.min(scaleWFill, scaleHFill); // 完全等比例 (不變形) 的縮放比例
+
+            const alpha = 0.5; // 0 = 完全等比例不變形；1 = 完全鋪滿頁面 (可能變形)
+            const scaleW = scaleContain + alpha * (scaleWFill - scaleContain);
+            const scaleH = scaleContain + alpha * (scaleHFill - scaleContain);
+
+            const drawWidth = canvas.width * scaleW;
+            const drawHeight = canvas.height * scaleH;
+            const offsetX = (pageWidth - drawWidth) / 2;
+            const offsetY = margin;
             pdf.addImage(imgData, 'JPEG', offsetX, offsetY, drawWidth, drawHeight, undefined, 'MEDIUM');
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
@@ -820,7 +813,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{re.sub(r'[^0-9A-Za-z_]', '_', dnd_key)}"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{re.sub(r'[^0-9A-Za-z_]', '_', dnd_key)}", pdf_orientation="landscape"),
                             height=90,
                         )
                 elif not value_cols:
@@ -938,6 +931,6 @@ else:
                         render_excel_share(excel_bytes, report_filename, uid="presc")
                     with dl_col2:
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc", pdf_orientation="portrait"),
                             height=90,
                         )
