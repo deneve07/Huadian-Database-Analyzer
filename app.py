@@ -68,7 +68,33 @@ def load_data(path: str) -> pd.DataFrame:
 
     for col in df.columns:
         if ("申報量" in col) or ("金額" in col):
-            df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
+            # 嚴重錯誤修正：來源 CSV 的數字欄位可能帶有千分位逗號 (例如 "34,490,060")
+            # 或前後空白，pd.to_numeric() 遇到逗號會直接判定為無法轉換而回傳 NaN，
+            # 原本的 .fillna(0) 會把這些「其實是合法數字、只是格式帶逗號」的儲存格
+            # 靜默吃成 0 —— 數字越大 (>=1000，含千分位逗號) 越容易中招，
+            # 曾實際造成金額欄位大量歸零、特定醫院整列申報量消失的嚴重資料錯誤。
+            cleaned = (
+                df[col].astype(str)
+                .str.strip()
+                .str.replace(",", "", regex=False)
+                .str.replace(" ", "", regex=False)
+            )
+            # 空字串視為缺值 (合理地當作 0)，其餘一律嘗試轉為數字
+            cleaned = cleaned.replace({"": None, "nan": None, "None": None})
+            numeric = pd.to_numeric(cleaned, errors="coerce")
+
+            # 找出「原始儲存格不是空的，但清理後仍無法轉成數字」的異常值 (例如混入文字)，
+            # 這種情況不應該被靜默歸零，而是要讓使用者知道，避免又發生數字憑空消失的問題
+            original_non_blank = df[col].astype(str).str.strip().replace({"": None, "nan": None, "None": None})
+            bad_mask = original_non_blank.notna() & numeric.isna()
+            if bad_mask.any():
+                bad_samples = df.loc[bad_mask, col].astype(str).unique()[:5]
+                st.warning(
+                    f"⚠️ 欄位「{col}」有 {bad_mask.sum()} 筆資料無法解析為數字，"
+                    f"已保留為 0 但請人工確認來源資料是否正確 (範例值：{', '.join(bad_samples)})"
+                )
+
+            df[col] = numeric.fillna(0)
 
     return df
 
@@ -886,7 +912,7 @@ else:
                     filename_parts = [comp, combo, form, dose]
                     if vendor:
                         filename_parts.append(vendor)
-                    filename_parts.append("醫院處方釋出率分析")
+                    filename_parts.append("處方釋出率分析")
                     report_filename = "_".join(filename_parts)
 
                     summary_box_html = f"""
