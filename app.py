@@ -851,7 +851,9 @@ if ana_choice in ANALYSIS_TO_SOURCE:
         else:
             df_comp = df_raw[df_raw["成分簡稱"].isin(comps_selected)]
 
-            other_cols = [c for c in df_raw.columns if c != "成分簡稱"]
+            # __mk 結尾的欄位是內部用來記錄「無資料(-)/異常標記(#N/A、Unknown)」的輔助欄位
+            # (詳見 load_data)，純粹供報表渲染時查詢使用，不應該出現在使用者可選的欄位清單裡
+            other_cols = [c for c in df_raw.columns if c != "成分簡稱" and not c.endswith("__mk")]
             value_cols_auto = [c for c in other_cols if ("申報量" in c) or ("金額" in c)]
             dim_cols_all = [c for c in other_cols if c not in value_cols_auto]
 
