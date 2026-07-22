@@ -17,6 +17,7 @@
 import re
 import io
 import os
+import json
 import base64
 import pandas as pd
 import numpy as np
@@ -293,12 +294,9 @@ CAPTURE_HTML_TEMPLATE = """
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<div style="display:flex; gap:10px;">
-  <button id="export-png-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
-    border-radius:6px;font-size:14px;cursor:pointer;">🖼️ 匯出 PNG 圖片</button>
-  <button id="export-pdf-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
-    border-radius:6px;font-size:14px;cursor:pointer;">📕 匯出 PDF</button>
+<div style="text-align:center;">
+  <button id="export-png-btn-{uid}" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出 PNG 圖片</button>
 </div>
 <div id="result-area-{uid}" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
 <div id="capture-wrap-{uid}" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
@@ -306,7 +304,6 @@ CAPTURE_HTML_TEMPLATE = """
 (function() {{
     const resultArea = document.getElementById('result-area-{uid}');
     const pngBtn = document.getElementById('export-png-btn-{uid}');
-    const pdfBtn = document.getElementById('export-pdf-btn-{uid}');
     let busy = false;
 
     async function captureCanvas() {{
@@ -365,7 +362,7 @@ CAPTURE_HTML_TEMPLATE = """
 
     pngBtn.addEventListener('click', async function() {{
         if (busy) return;
-        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
+        busy = true; pngBtn.disabled = true;
         resultArea.innerText = '🔄 產生圖片中，請稍候...';
         try {{
             const canvas = await captureCanvas();
@@ -375,63 +372,179 @@ CAPTURE_HTML_TEMPLATE = """
         }} catch (err) {{
             resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
         }} finally {{
-            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
-        }}
-    }});
-
-    pdfBtn.addEventListener('click', async function() {{
-        if (busy) return;
-        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
-        resultArea.innerText = '🔄 產生 PDF 中，請稍候...';
-        try {{
-            if (typeof window.jspdf === 'undefined') {{
-                throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
-            }}
-            const canvas = await captureCanvas();
-            // PDF 內嵌圖片改用 JPEG 壓縮 (品質 0.92)，而非無失真 PNG，
-            // 可大幅縮小 PDF 檔案體積 (表格文字仍清晰，僅色階做輕微壓縮)
-            const imgData = canvas.toDataURL('image/jpeg', 0.92);
-            const {{ jsPDF }} = window.jspdf;
-            // 固定 A4 頁面 (方向依報表類型傳入 pdf_orientation：橫式或直式)。在「完全等比例 (可能留白較多)」與「完全鋪滿 (可能變形)」
-            // 之間取中間值 (alpha=0.5)：先算出完全鋪滿所需的水平/垂直縮放比例，
-            // 再各自往等比例縮放的方向拉回一半，讓留白變少、但文字不會被拉伸得太明顯
-            const pdf = new jsPDF({{
-                orientation: '{pdf_orientation}',
-                unit: 'mm',
-                format: 'a4',
-                compress: true
-            }});
-            const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const margin = 10; // mm
-            const maxWidth = pageWidth - margin * 2;
-            const maxHeight = pageHeight - margin * 2;
-
-            const scaleWFill = maxWidth / canvas.width;   // 水平完全鋪滿所需縮放比例
-            const scaleHFill = maxHeight / canvas.height;  // 垂直完全鋪滿所需縮放比例
-            const scaleContain = Math.min(scaleWFill, scaleHFill); // 完全等比例 (不變形) 的縮放比例
-
-            const alpha = 0.5; // 0 = 完全等比例不變形；1 = 完全鋪滿頁面 (可能變形)
-            const scaleW = scaleContain + alpha * (scaleWFill - scaleContain);
-            const scaleH = scaleContain + alpha * (scaleHFill - scaleContain);
-
-            const drawWidth = canvas.width * scaleW;
-            const drawHeight = canvas.height * scaleH;
-            const offsetX = (pageWidth - drawWidth) / 2;
-            const offsetY = margin;
-            pdf.addImage(imgData, 'JPEG', offsetX, offsetY, drawWidth, drawHeight, undefined, 'MEDIUM');
-            const blob = pdf.output('blob');
-            await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
-        }} catch (err) {{
-            resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
-        }} finally {{
-            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
+            busy = false; pngBtn.disabled = false;
         }}
     }});
 }})();
 </script>
 """
 
+
+PDF_TABLE_TEMPLATE = """
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf-autotable/3.8.2/jspdf.plugin.autotable.min.js"></script>
+<div style="text-align:center;">
+  <button id="pdftable-btn-__UID__" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">📕 匯出 PDF 報表</button>
+</div>
+<div id="pdftable-result-__UID__" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
+<script>
+(function() {
+    // 直接把報表的 rows / 欄位資料交給 jsPDF-AutoTable 畫成「真正的表格」，
+    // 而不是把畫面截圖成圖片再塞進 PDF —— 這樣欄位不管多寡，欄寬都會自動依內容與
+    // 頁寬計算，文字是向量字，不會有任何拉伸/壓縮變形；且綠底標題列會跟 Excel 一樣
+    // 自動在每一頁重複出現 (AutoTable 內建行為)。
+    const payload = __PAYLOAD_JSON__;
+    const filename = "__FILENAME__";
+    const orientation = "__ORIENTATION__";
+    const btn = document.getElementById('pdftable-btn-__UID__');
+    const resultArea = document.getElementById('pdftable-result-__UID__');
+    let busy = false;
+
+    btn.addEventListener('click', async function() {
+        if (busy) return;
+        busy = true; btn.disabled = true;
+        resultArea.innerText = '🔄 產生 PDF 中，請稍候...';
+        try {
+            if (typeof window.jspdf === 'undefined') {
+                throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
+            }
+            const { jsPDF } = window.jspdf;
+            const doc = new jsPDF({ orientation: orientation, unit: 'mm', format: 'a4' });
+            const pageWidth = doc.internal.pageSize.getWidth();
+            const margin = 10;
+            let y = margin;
+
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(14);
+            doc.setTextColor(0, 77, 64);
+            doc.text(payload.title, pageWidth / 2, y + 4, { align: 'center' });
+            y += 11;
+
+            if (payload.summary_lines && payload.summary_lines.length) {
+                payload.summary_lines.forEach(function(line) {
+                    doc.setFont('helvetica', line.bold ? 'bold' : 'normal');
+                    doc.setFontSize(line.big ? 15 : 11);
+                    const c = line.color || [51, 51, 51];
+                    doc.setTextColor(c[0], c[1], c[2]);
+                    doc.text(line.text, margin, y);
+                    y += line.big ? 8 : 6;
+                });
+                y += 3;
+            }
+
+            doc.autoTable({
+                startY: y,
+                head: [payload.headers],
+                body: payload.body,
+                margin: { left: margin, right: margin, top: margin },
+                styles: {
+                    font: 'helvetica', fontSize: 8.5, cellPadding: 2,
+                    halign: 'center', valign: 'middle',
+                    lineColor: [217, 217, 217], lineWidth: 0.1, textColor: [0, 0, 0]
+                },
+                headStyles: {
+                    fillColor: [0, 105, 92], textColor: [255, 255, 255],
+                    fontStyle: 'bold', halign: 'center', valign: 'middle'
+                },
+                didParseCell: function(data) {
+                    if (data.section === 'body') {
+                        const rtype = payload.row_types[data.row.index];
+                        if (rtype === 'subtotal') {
+                            data.cell.styles.fillColor = [224, 242, 241];
+                            data.cell.styles.fontStyle = 'bold';
+                        } else if (rtype === 'total') {
+                            data.cell.styles.fillColor = [178, 223, 219];
+                            data.cell.styles.fontStyle = 'bold';
+                        }
+                        if (data.column.index === 0) {
+                            data.cell.styles.halign = 'left';
+                        }
+                    }
+                }
+            });
+
+            const blob = doc.output('blob');
+            const file = new File([blob], filename + '.pdf', { type: 'application/pdf' });
+            const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent) ||
+                (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+
+            if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+                // 注意：同時帶入 files 與 title 時，iOS「儲存到檔案」會多存一個文字檔，因此只傳 files
+                try {
+                    await navigator.share({ files: [file] });
+                    resultArea.innerText = '✅ 已開啟分享選單';
+                } catch (shareErr) {
+                    // AbortError = 使用者按了取消，不視為錯誤
+                }
+            } else {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = filename + '.pdf';
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                setTimeout(function() { URL.revokeObjectURL(url); }, 5000);
+                resultArea.innerText = '✅ 已開始下載';
+            }
+        } catch (err) {
+            resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
+        } finally {
+            busy = false; btn.disabled = false;
+        }
+    });
+})();
+</script>
+"""
+
+
+def build_pdf_table_payload(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_lines=None):
+    """把報表的 rows/欄位資料整理成給 jsPDF-AutoTable 用的 JSON 結構
+    (標頭、每列文字內容、每列類型 data/subtotal/total)，PDF 端會直接畫成
+    向量表格，而不是把 HTML 截圖轉貼成圖片。"""
+    extra_cols = set(pct_cols + growth_cols)
+    display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
+
+    headers = list(row_fields)
+    for c in display_cols:
+        year, label = pretty_header(c)
+        headers.append(f"{year}\n{label}" if year else label)
+
+    body = []
+    row_types = []
+    for r in rows:
+        cells = []
+        for f in row_fields:
+            cells.append(str(r["values"].get(f, "")))
+        for c in display_cols:
+            if c in extra_cols:
+                v = r["sums"].get(c, 0)
+                cells.append(f"{v:.1%}")
+            else:
+                v = r["sums"].get(c, "")
+                cells.append(f"{v:,.0f}" if v != "" else "")
+        body.append(cells)
+        row_types.append(r["type"])
+
+    return {
+        "title": report_title,
+        "summary_lines": summary_lines or [],
+        "headers": headers,
+        "body": body,
+        "row_types": row_types,
+    }
+
+
+def render_pdf_table(payload: dict, filename: str, orientation: str, uid: str):
+    safe_uid = re.sub(r"[^0-9A-Za-z_]", "_", uid)
+    safe_filename = filename.replace("\\", "\\\\").replace('"', '\\"')
+    html = PDF_TABLE_TEMPLATE
+    html = html.replace("__PAYLOAD_JSON__", json.dumps(payload, ensure_ascii=False))
+    html = html.replace("__FILENAME__", safe_filename)
+    html = html.replace("__ORIENTATION__", orientation)
+    html = html.replace("__UID__", safe_uid)
+    components.html(html, height=70)
 
 
 EXCEL_SHARE_HTML_TEMPLATE = """
@@ -805,7 +918,8 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                     st.markdown(table_html, unsafe_allow_html=True)
 
                     st.markdown("### 📥 下載")
-                    dl_col1, dl_col2 = st.columns(2)
+                    dl_col1, dl_col2, dl_col3 = st.columns(3)
+                    safe_dnd_key = re.sub(r"[^0-9A-Za-z_]", "_", dnd_key)
                     with dl_col1:
                         excel_bytes = generate_excel_bytes(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
                         render_excel_share(excel_bytes, report_title, uid=f"pivot_{dnd_key}")
@@ -813,9 +927,12 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{re.sub(r'[^0-9A-Za-z_]', '_', dnd_key)}", pdf_orientation="landscape"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{safe_dnd_key}"),
                             height=90,
                         )
+                    with dl_col3:
+                        pdf_payload = build_pdf_table_payload(rows, full_row_fields, value_cols, pct_cols, growth_cols, report_title)
+                        render_pdf_table(pdf_payload, report_title, orientation="landscape", uid=f"pivot_{safe_dnd_key}")
                 elif not value_cols:
                     st.warning("⚠️ 請至少選擇一個要加總的數值欄位。")
                 else:
@@ -915,7 +1032,7 @@ else:
                     st.markdown(table_html, unsafe_allow_html=True)
 
                     st.markdown("### 📥 下載")
-                    dl_col1, dl_col2 = st.columns(2)
+                    dl_col1, dl_col2, dl_col3 = st.columns(3)
                     with dl_col1:
                         summary_lines = [
                             ("DS from HP:", summary["ds_hp_val"], "#,##0"),
@@ -931,6 +1048,20 @@ else:
                         render_excel_share(excel_bytes, report_filename, uid="presc")
                     with dl_col2:
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc", pdf_orientation="portrait"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc"),
                             height=90,
                         )
+                    with dl_col3:
+                        pdf_summary_lines = [
+                            {"text": f"DS from HP： {summary['ds_hp_val']:,.0f}", "bold": True, "color": [0, 77, 64]},
+                            {"text": f"HP： {summary['hp_val']:,.0f}", "bold": True, "color": [0, 77, 64]},
+                            {"text": f"DS from HP + HP： {summary['total_val']:,.0f}", "bold": True, "color": [0, 77, 64]},
+                            {"text": "公式：處方釋出率 ＝ DS from HP ÷ (DS from HP + HP) × 100%", "bold": False, "color": [0, 105, 92]},
+                            {"text": f"{summary['title']}： {summary['rate']:.2f}%", "bold": True, "big": True, "color": [211, 47, 47]},
+                        ]
+                        pdf_payload = build_pdf_table_payload(
+                            summary["rows"], summary["row_fields"], summary["value_cols"],
+                            summary["pct_cols"], summary["growth_cols"], report_filename,
+                            summary_lines=pdf_summary_lines,
+                        )
+                        render_pdf_table(pdf_payload, report_filename, orientation="portrait", uid="presc")
