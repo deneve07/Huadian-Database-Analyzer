@@ -73,6 +73,33 @@ def load_data(path: str) -> pd.DataFrame:
     if rename_map:
         df = df.rename(columns=rename_map)
 
+    # 偵測重複欄位名稱：若來源檔案 (或改名後) 出現同名欄位，df[col] 會回傳
+    # DataFrame 而非單一 Series，後續加總/格式化會出現非預期的型別，
+    # 曾實際導致報表格式化時崩潰。及早警示、合併重複欄位 (取加總) 避免此問題。
+    if df.columns.duplicated().any():
+        dup_names = sorted(set(df.columns[df.columns.duplicated()]))
+        st.warning(
+            f"⚠️ 資料檔案裡有重複的欄位名稱：{', '.join(dup_names)}，"
+            f"已自動合併 (數字欄位加總、文字欄位取第一筆)，請確認來源檔案是否有誤。"
+        )
+        merged = {}
+        for name in dict.fromkeys(df.columns):
+            same = df.loc[:, df.columns == name]
+            if same.shape[1] == 1:
+                merged[name] = same.iloc[:, 0]
+            elif ("申報量" in name) or ("金額" in name):
+                # 加總前務必先清除千分位逗號/空白/缺值佔位符，否則會重蹈
+                # 「帶逗號的大數字被 pd.to_numeric 誤判成 NaN 而變成 0」的覆轍
+                cleaned_cols = same.apply(
+                    lambda s: s.astype(str).str.strip().str.replace(",", "", regex=False).str.replace(" ", "", regex=False)
+                )
+                blank_vals = {"", "nan", "none", "-", "--", "－", "null", "無"}
+                cleaned_cols = cleaned_cols.apply(lambda s: s.mask(s.str.lower().isin(blank_vals), None))
+                merged[name] = cleaned_cols.apply(pd.to_numeric, errors="coerce").fillna(0).sum(axis=1)
+            else:
+                merged[name] = same.iloc[:, 0]
+        df = pd.DataFrame(merged)
+
     for col in df.columns:
         if ("申報量" in col) or ("金額" in col):
             # 嚴重錯誤修正：來源 CSV 的數字欄位可能帶有千分位逗號 (例如 "34,490,060")
@@ -321,6 +348,25 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
     return rows, pct_cols, growth_cols
 
 
+def safe_numeric(v):
+    """安全轉換為數字，供報表格式化前使用。萬一因為未預期的資料狀況 (例如
+    來源檔案有特殊欄位命名或型別問題) 讓某個儲存格的值不是單純的數字，
+    也不應該讓整份報表直接崩潰 —— 寧可退回顯示原樣文字，事後方便追查，
+    也不要讓使用者完全看不到報表。回傳 (數值或None, 是否為合法數字)。"""
+    if isinstance(v, (int, float)) and not isinstance(v, bool):
+        try:
+            if pd.isna(v):
+                return 0.0, True
+        except (TypeError, ValueError):
+            pass
+        return float(v), True
+    try:
+        n = pd.to_numeric(v)
+        return float(n), True
+    except (TypeError, ValueError):
+        return v, False
+
+
 # ============================================================
 # 樣式化 HTML 預覽 (比照原系統的綠底標題、小計/總計配色)
 # ============================================================
@@ -369,13 +415,17 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
         overrides = r.get("overrides", {})
         for c in display_cols:
             if c in extra_cols:
-                v = r["sums"].get(c, 0)
-                html.append(f"<td style='{td_style}text-align:right;'>{v:.1%}</td>")
+                v, ok = safe_numeric(r["sums"].get(c, 0))
+                html.append(f"<td style='{td_style}text-align:right;'>{v:.1%}</td>" if ok else f"<td style='{td_style}text-align:right;color:#999999;'>{v}</td>")
             elif c in overrides:
                 html.append(f"<td style='{td_style}text-align:right;color:#999999;'>{overrides[c]}</td>")
             else:
-                v = r["sums"].get(c, "")
-                html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if v != "" else f"<td style='{td_style}'></td>")
+                raw = r["sums"].get(c, "")
+                if raw == "":
+                    html.append(f"<td style='{td_style}'></td>")
+                else:
+                    v, ok = safe_numeric(raw)
+                    html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if ok else f"<td style='{td_style}text-align:right;color:#999999;'>{v}</td>")
         html.append("</tr>")
 
     html.append("</table></div></div>")
@@ -680,16 +730,29 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
                 cell.alignment = align_r
                 cell.font = Font(name="微軟正黑體", size=11, color="999999")
             elif h in value_cols:
-                v = r["sums"].get(h, "")
-                cell.value = v
-                cell.number_format = "#,##0"
+                raw = r["sums"].get(h, "")
+                v, ok = safe_numeric(raw)
+                if ok:
+                    cell.value = v
+                    cell.number_format = "#,##0"
+                else:
+                    cell.value = str(v)
+                    cell.font = Font(name="微軟正黑體", size=11, color="999999")
                 cell.alignment = align_r
-                cell.font = font_bold if r["type"] != "data" else font_norm
+                if ok:
+                    cell.font = font_bold if r["type"] != "data" else font_norm
             elif h in extra_cols:
-                cell.value = r["sums"].get(h, 0)
-                cell.number_format = "0.0%"
+                raw = r["sums"].get(h, 0)
+                v, ok = safe_numeric(raw)
+                if ok:
+                    cell.value = v
+                    cell.number_format = "0.0%"
+                else:
+                    cell.value = str(v)
+                    cell.font = Font(name="微軟正黑體", size=11, color="999999")
                 cell.alignment = align_r
-                cell.font = font_bold if r["type"] != "data" else font_norm
+                if ok:
+                    cell.font = font_bold if r["type"] != "data" else font_norm
             else:
                 cell.value = r["values"].get(h, "")
                 cell.alignment = Alignment(horizontal="left" if i == 1 else "center", vertical="center", wrap_text=True)
