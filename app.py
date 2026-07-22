@@ -55,7 +55,10 @@ def load_data(path: str) -> pd.DataFrame:
             # 導致這些原始文字在我們自訂的缺值/異常文字判斷邏輯執行之前就已經遺失、
             # 沒辦法跟真正的空白儲存格或 "-" 佔位符做出區分。改為手動控制何謂缺值。
             df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False, na_filter=False)
-    except Exception:
+    except Exception as e:
+        # 靜默吞掉讀取錯誤會讓問題延遲到後面 (例如樞紐分析階段) 才爆成難以追查的
+        # KeyError；改為明確顯示讀取失敗原因，方便直接定位是檔案格式的問題
+        st.error(f"⚠️ 讀取資料檔案「{path}」時發生錯誤，已略過此檔案：{e}")
         return pd.DataFrame()
 
     df.columns = [str(c).strip() for c in df.columns]
@@ -151,10 +154,15 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
     # 只要其中有任一筆是「正常數字」，代表加總後這一格具有實際數字意義，優先顯示數字；
     # 全部都是「無資料」佔位符才顯示 "-"；若混雜了不同的異常文字則無法用單一文字代表，
     # 一律退回顯示數字 (此時應為 0)。這一步僅影響「顯示」，加總計算 (下面的 .sum()) 完全不受影響。
-    marker_cols = [c + "__mk" for c in value_cols if c + "__mk" in df.columns]
+    #
+    # 注意：標記結果改用獨立的查詢表 (dict) 儲存，刻意不用 merge() 併回主要的 df，
+    # 避免合併後欄位結構跑掉、導致後面 sort_values() 等依賴欄位名稱的邏輯找不到欄位
+    # (曾實際發生 KeyError)。這樣主流程的 df 從頭到尾維持跟修改前完全一樣的欄位結構。
+    col_to_mk = {c: c + "__mk" for c in value_cols if c + "__mk" in df.columns}
+    overrides_lookup = {}
 
-    def combine_markers(s):
-        vals = s.unique().tolist()
+    def combine_markers(vals):
+        vals = list(dict.fromkeys(vals))  # 去重但保留順序，避免 set 的隨機順序
         if len(vals) == 1:
             return vals[0]
         if "" in vals:
@@ -163,16 +171,25 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
             return "-"
         return ""
 
-    overrides_df = None
-    if marker_cols:
-        overrides_df = df.groupby(row_fields, as_index=False)[marker_cols].agg(combine_markers)
+    if col_to_mk:
+        marker_cols = list(col_to_mk.values())
+        grouped_marks = df.groupby(row_fields, as_index=False)[marker_cols].agg(
+            lambda s: combine_markers(s.tolist())
+        )
+        mk_to_col = {mk: c for c, mk in col_to_mk.items()}
+        for _, r in grouped_marks.iterrows():
+            key = tuple(r[f] for f in row_fields)
+            overrides = {}
+            for mk_col in marker_cols:
+                v = r[mk_col]
+                if v:
+                    overrides[mk_to_col[mk_col]] = v
+            if overrides:
+                overrides_lookup[key] = overrides
 
     # 先依「報表欄位」的組合彙總數值，確保同一個欄位組合 (例如同一家廠商) 只會出現一列，
     # 而不是把資料集裡每一筆原始紀錄 (可能還有藥品名稱、藥證字號等未顯示的欄位差異) 都個別列出來
     df = df.groupby(row_fields, as_index=False)[value_cols].sum()
-
-    if overrides_df is not None:
-        df = df.merge(overrides_df, on=row_fields, how="left")
 
     qty_cols = [c for c in value_cols if "申報量" in c]
     qty_years = sorted(set(c[:4] for c in qty_cols))
@@ -260,13 +277,8 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
         sums.update(compute_extra_for_row(sums, top_totals))
         # 只有明細列 (data) 才會保留「-」或原樣異常文字的顯示標記；
         # 小計/總計列一律是多筆明細加總而成，即使全部都是 0 也視為正常數字顯示，不套用標記
-        overrides = {}
-        for c in value_cols:
-            mk_col = c + "__mk"
-            if mk_col in row.index:
-                mk = row[mk_col]
-                if mk:
-                    overrides[c] = mk
+        key = tuple(row[f] for f in row_fields)
+        overrides = overrides_lookup.get(key, {})
         rows.append({"type": "data", "values": rec_vals, "sums": sums, "overrides": overrides})
         for c in first_flags:
             first_flags[c] = False
