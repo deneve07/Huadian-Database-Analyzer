@@ -79,13 +79,21 @@ def load_data(path: str) -> pd.DataFrame:
                 .str.replace(",", "", regex=False)
                 .str.replace(" ", "", regex=False)
             )
-            # 空字串視為缺值 (合理地當作 0)，其餘一律嘗試轉為數字
-            cleaned = cleaned.replace({"": None, "nan": None, "None": None})
+            # 空字串、以及常見的「無資料/掛零」佔位符號 (例如 "-"、全形"－"、"--"、"N/A"、"nan")
+            # 一律視為缺值、合理地當作 0，不應被誤判為異常資料而跳出警告
+            placeholder_values = {"", "nan", "none", "-", "--", "－", "n/a", "na", "null", "無"}
+            cleaned_lower = cleaned.str.lower()
+            is_placeholder = cleaned_lower.isin(placeholder_values)
+            cleaned = cleaned.mask(is_placeholder, None)
             numeric = pd.to_numeric(cleaned, errors="coerce")
 
-            # 找出「原始儲存格不是空的，但清理後仍無法轉成數字」的異常值 (例如混入文字)，
-            # 這種情況不應該被靜默歸零，而是要讓使用者知道，避免又發生數字憑空消失的問題
-            original_non_blank = df[col].astype(str).str.strip().replace({"": None, "nan": None, "None": None})
+            # 找出「原始儲存格不是空的、也不是常見缺值佔位符，但清理後仍無法轉成數字」的異常值
+            # (例如混入中文字、亂碼)，這種情況不應該被靜默歸零，而是要讓使用者知道，
+            # 避免又發生數字憑空消失的問題
+            original_non_blank = df[col].astype(str).str.strip()
+            original_non_blank = original_non_blank.mask(
+                original_non_blank.str.lower().isin(placeholder_values), None
+            )
             bad_mask = original_non_blank.notna() & numeric.isna()
             if bad_mask.any():
                 bad_samples = df.loc[bad_mask, col].astype(str).unique()[:5]
