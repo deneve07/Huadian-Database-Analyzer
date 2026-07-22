@@ -912,7 +912,7 @@ else:
                     filename_parts = [comp, combo, form, dose]
                     if vendor:
                         filename_parts.append(vendor)
-                    filename_parts.append("處方釋出率分析")
+                    filename_parts.append("醫院處方釋出率分析")
                     report_filename = "_".join(filename_parts)
 
                     summary_box_html = f"""
