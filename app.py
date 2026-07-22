@@ -371,12 +371,15 @@ def safe_numeric(v):
 # 樣式化 HTML 預覽 (比照原系統的綠底標題、小計/總計配色)
 # ============================================================
 
+HTML_FONT_FAMILY = "'Microsoft JhengHei', 'Noto Sans TC', 'PingFang TC', 'Heiti TC', 'Microsoft YaHei', Arial, sans-serif"
+
+
 def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report_title, summary_html=""):
     extra_cols = set(pct_cols + growth_cols)
     display_cols = order_display_cols(value_cols, pct_cols, growth_cols)
     headers = row_fields + display_cols
 
-    font_family = "'Microsoft JhengHei', 'Noto Sans TC', 'PingFang TC', 'Heiti TC', 'Microsoft YaHei', Arial, sans-serif"
+    font_family = HTML_FONT_FAMILY
     th_style = f"color:#FFFFFF;background-color:#00695C;text-align:center;border:1px solid #D9D9D9;padding:8px 10px;font-weight:bold;font-family:{font_family};"
     td_style = f"border:1px solid #D9D9D9;padding:6px 10px;font-family:{font_family};"
 
@@ -526,6 +529,96 @@ CAPTURE_HTML_TEMPLATE = """
         }}
     }});
 
+    async function renderPaginatedPdf(pdf) {{
+        // 依實際「列」的高度分頁，而不是把整張截圖硬塞縮小成一頁：
+        // 1. 量測每一列的實際高度，抓出「一頁最多能放幾列」，絕不會把某一列從中間切斷
+        // 2. 每一頁都用「跟原表相同的欄寬」+ 相同的擷取寬度，確保跨頁欄寬、字體大小完全一致
+        // 3. 每一頁都重複表頭與報表標題 (呼應 Excel 版「每頁重複標題列」的需求)
+        const table = document.querySelector('#capture-wrap-{uid} #report-table');
+        if (!table) {{
+            throw new Error('找不到報表表格 (#report-table)');
+        }}
+        const allRows = Array.from(table.rows);
+        const headerRow = allRows[0];
+        const dataRows = allRows.slice(1);
+        const colWidths = Array.from(headerRow.cells).map(function(td) {{ return td.getBoundingClientRect().width; }});
+        const tableWidthPx = table.getBoundingClientRect().width;
+
+        const pageWidth = pdf.internal.pageSize.getWidth();
+        const pageHeight = pdf.internal.pageSize.getHeight();
+        const margin = 10; // mm
+        const maxWidth = pageWidth - margin * 2;
+        const maxHeight = pageHeight - margin * 2;
+
+        const scale = maxWidth / tableWidthPx; // mm / px，跨頁統一，確保欄寬與字級一致
+        const titleHeightPx = 40; // 每頁標題預留高度 (px)，對應下方重建標題的樣式
+        const headerHeightPx = headerRow.getBoundingClientRect().height;
+        const pageCapacityPx = (maxHeight / scale) - titleHeightPx;
+
+        // 依累計高度切出頁次分界；每頁固定扣掉「標題 + 表頭」的高度後才是資料列可用空間
+        const pages = [];
+        let currentRows = [];
+        let currentHeight = headerHeightPx;
+        for (const row of dataRows) {{
+            const h = row.getBoundingClientRect().height;
+            if (currentRows.length > 0 && currentHeight + h > pageCapacityPx) {{
+                pages.push(currentRows);
+                currentRows = [];
+                currentHeight = headerHeightPx;
+            }}
+            currentRows.push(row);
+            currentHeight += h;
+        }}
+        if (currentRows.length > 0 || pages.length === 0) {{
+            pages.push(currentRows);
+        }}
+
+        for (let i = 0; i < pages.length; i++) {{
+            const wrapper = document.createElement('div');
+            wrapper.style.cssText = "position:absolute; left:-99999px; top:0; width:max-content; background:#fff; font-family:{font_family_js};";
+
+            const titleEl = document.createElement('h3');
+            titleEl.style.cssText = "text-align:center; color:#004D40; margin:0 0 10px 0; font-family:{font_family_js};";
+            titleEl.textContent = '{filename}';
+            wrapper.appendChild(titleEl);
+
+            const pageTable = document.createElement('table');
+            pageTable.style.cssText = table.style.cssText;
+            pageTable.style.tableLayout = 'fixed';
+            const colgroup = document.createElement('colgroup');
+            colWidths.forEach(function(w) {{
+                const col = document.createElement('col');
+                col.style.width = w + 'px';
+                colgroup.appendChild(col);
+            }});
+            pageTable.appendChild(colgroup);
+            pageTable.appendChild(headerRow.cloneNode(true));
+            pages[i].forEach(function(row) {{ pageTable.appendChild(row.cloneNode(true)); }});
+            wrapper.appendChild(pageTable);
+
+            document.body.appendChild(wrapper);
+            if (document.fonts && document.fonts.ready) {{
+                await document.fonts.ready;
+            }}
+            const canvas = await html2canvas(wrapper, {{
+                scale: 4,
+                backgroundColor: '#ffffff',
+                windowWidth: tableWidthPx,
+                windowHeight: wrapper.scrollHeight,
+                width: tableWidthPx,
+                height: wrapper.scrollHeight,
+                useCORS: true
+            }});
+            document.body.removeChild(wrapper);
+
+            const imgData = canvas.toDataURL('image/jpeg', 0.92);
+            const drawWidth = maxWidth;
+            const drawHeight = canvas.height * (drawWidth / canvas.width);
+            if (i > 0) {{ pdf.addPage(); }}
+            pdf.addImage(imgData, 'JPEG', margin, margin, drawWidth, drawHeight, undefined, 'MEDIUM');
+        }}
+    }}
+
     pdfBtn.addEventListener('click', async function() {{
         if (busy) return;
         busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
@@ -534,9 +627,6 @@ CAPTURE_HTML_TEMPLATE = """
             if (typeof window.jspdf === 'undefined') {{
                 throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
             }}
-            const canvas = await captureCanvas();
-            // PDF 內嵌圖片改用 JPEG 壓縮 (品質 0.92)，而非無失真 PNG，可大幅縮小 PDF 檔案體積
-            const imgData = canvas.toDataURL('image/jpeg', 0.92);
             const {{ jsPDF }} = window.jspdf;
             const pdf = new jsPDF({{
                 orientation: '{pdf_orientation}',
@@ -544,22 +634,7 @@ CAPTURE_HTML_TEMPLATE = """
                 format: 'a4',
                 compress: true
             }});
-            const pageWidth = pdf.internal.pageSize.getWidth();
-            const pageHeight = pdf.internal.pageSize.getHeight();
-            const margin = 10; // mm
-            const maxWidth = pageWidth - margin * 2;
-            const maxHeight = pageHeight - margin * 2;
-            // 一律採用嚴格等比例縮放置頂，寧可留白也不讓文字被拉伸變形
-            const imgRatio = canvas.width / canvas.height;
-            let drawWidth = maxWidth;
-            let drawHeight = drawWidth / imgRatio;
-            if (drawHeight > maxHeight) {{
-                drawHeight = maxHeight;
-                drawWidth = drawHeight * imgRatio;
-            }}
-            const offsetX = (pageWidth - drawWidth) / 2;
-            const offsetY = margin;
-            pdf.addImage(imgData, 'JPEG', offsetX, offsetY, drawWidth, drawHeight, undefined, 'MEDIUM');
+            await renderPaginatedPdf(pdf);
             const blob = pdf.output('blob');
             await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
         }} catch (err) {{
@@ -977,7 +1052,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{safe_dnd_key}", pdf_orientation="landscape"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{safe_dnd_key}", pdf_orientation="landscape", font_family_js=HTML_FONT_FAMILY),
                             height=90,
                         )
                 elif not value_cols:
@@ -1095,6 +1170,6 @@ else:
                         render_excel_share(excel_bytes, report_filename, uid="presc")
                     with dl_col2:
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc", pdf_orientation="portrait"),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc", pdf_orientation="portrait", font_family_js=HTML_FONT_FAMILY),
                             height=90,
                         )
