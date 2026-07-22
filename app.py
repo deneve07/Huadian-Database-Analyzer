@@ -50,7 +50,11 @@ def load_data(path: str) -> pd.DataFrame:
         else:
             # utf-8-sig 可自動去除 Excel 匯出 CSV 常見的 BOM 字元，
             # 否則第一欄欄名容易變成「\ufeff成分簡稱」導致 KeyError
-            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig")
+            # keep_default_na=False, na_filter=False：避免 pandas 讀取階段就把 "#N/A"、"N/A"、
+            # "NA"、"NULL"、"None" 等字串自動判定為空值並轉成 NaN (即使 dtype=str 也一樣會轉)，
+            # 導致這些原始文字在我們自訂的缺值/異常文字判斷邏輯執行之前就已經遺失、
+            # 沒辦法跟真正的空白儲存格或 "-" 佔位符做出區分。改為手動控制何謂缺值。
+            df = pd.read_csv(path, dtype=str, encoding="utf-8-sig", keep_default_na=False, na_filter=False)
     except Exception:
         return pd.DataFrame()
 
@@ -79,27 +83,34 @@ def load_data(path: str) -> pd.DataFrame:
                 .str.replace(",", "", regex=False)
                 .str.replace(" ", "", regex=False)
             )
-            # 空字串、以及常見的「無資料/掛零」佔位符號 (例如 "-"、全形"－"、"--"、"N/A"、"nan")
-            # 一律視為缺值、合理地當作 0，不應被誤判為異常資料而跳出警告
-            placeholder_values = {"", "nan", "none", "-", "--", "－", "n/a", "na", "null", "無"}
+            # 「無資料」佔位符號 (空白、"-"、全形"－"、"--"、"nan"、"無" 等)：
+            # 加總計算一律當 0，但在報表明細列會顯示為「-」，跟「真正的0」做出區別，
+            # 讓使用者能一眼看出這一格究竟是「本來就是0」還是「根本沒有申報資料」。
+            blank_placeholder_values = {"", "nan", "none", "-", "--", "－", "null", "無"}
             cleaned_lower = cleaned.str.lower()
-            is_placeholder = cleaned_lower.isin(placeholder_values)
-            cleaned = cleaned.mask(is_placeholder, None)
-            numeric = pd.to_numeric(cleaned, errors="coerce")
+            is_blank_placeholder = cleaned_lower.isin(blank_placeholder_values)
+            cleaned_for_numeric = cleaned.mask(is_blank_placeholder, None)
+            numeric = pd.to_numeric(cleaned_for_numeric, errors="coerce")
 
-            # 找出「原始儲存格不是空的、也不是常見缺值佔位符，但清理後仍無法轉成數字」的異常值
-            # (例如混入中文字、亂碼)，這種情況不應該被靜默歸零，而是要讓使用者知道，
-            # 避免又發生數字憑空消失的問題
-            original_non_blank = df[col].astype(str).str.strip()
-            original_non_blank = original_non_blank.mask(
-                original_non_blank.str.lower().isin(placeholder_values), None
-            )
-            bad_mask = original_non_blank.notna() & numeric.isna()
-            if bad_mask.any():
-                bad_samples = df.loc[bad_mask, col].astype(str).unique()[:5]
+            # 找出「不是空白/-類佔位符，但清理後仍無法轉成數字」的內容 (例如 "#N/A"、"Unknown"、
+            # "NoN" 這類具資訊性的異常標記)。這種情況不當作單純缺值，加總計算依然視為 0，
+            # 但在報表明細列會保留「原樣文字」顯示，讓使用者知道這裡不是掛零、而是資料本身
+            # 標記了特殊狀態，同時仍跳出警告提醒人工確認來源資料。
+            original_stripped = df[col].astype(str).str.strip()
+            is_bad_text = original_stripped.notna() & (~is_blank_placeholder) & numeric.isna()
+
+            # 顯示標記欄位：""=正常數字 (直接顯示格式化後的數字)；"-"=無資料佔位符；
+            # 其餘字串=保留原樣顯示的異常標記文字 (例如 "#N/A"、"Unknown")
+            marker = pd.Series("", index=df.index, dtype=object)
+            marker[is_blank_placeholder] = "-"
+            marker[is_bad_text] = original_stripped[is_bad_text]
+            df[col + "__mk"] = marker
+
+            if is_bad_text.any():
+                bad_samples = df.loc[is_bad_text, col].astype(str).unique()[:5]
                 st.warning(
-                    f"⚠️ 欄位「{col}」有 {bad_mask.sum()} 筆資料無法解析為數字，"
-                    f"已保留為 0 但請人工確認來源資料是否正確 (範例值：{', '.join(bad_samples)})"
+                    f"⚠️ 欄位「{col}」有 {is_bad_text.sum()} 筆資料無法解析為數字，"
+                    f"加總計算已視為 0，報表中會保留原樣文字顯示 (範例值：{', '.join(bad_samples)})"
                 )
 
             df[col] = numeric.fillna(0)
@@ -135,9 +146,33 @@ def pretty_header(col: str):
 
 def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list, value_cols: list,
                        pct_years: list = None, add_growth: bool = False):
+    # 顯示標記欄位 (由 load_data 產生)：""=正常數字、"-"=無資料佔位符、其他文字=異常標記 (如 #N/A、Unknown)。
+    # 同一個報表欄位組合 (row_fields) 可能對應到來源資料裡的多筆原始紀錄，合併規則如下：
+    # 只要其中有任一筆是「正常數字」，代表加總後這一格具有實際數字意義，優先顯示數字；
+    # 全部都是「無資料」佔位符才顯示 "-"；若混雜了不同的異常文字則無法用單一文字代表，
+    # 一律退回顯示數字 (此時應為 0)。這一步僅影響「顯示」，加總計算 (下面的 .sum()) 完全不受影響。
+    marker_cols = [c + "__mk" for c in value_cols if c + "__mk" in df.columns]
+
+    def combine_markers(s):
+        vals = s.unique().tolist()
+        if len(vals) == 1:
+            return vals[0]
+        if "" in vals:
+            return ""
+        if all(v == "-" for v in vals):
+            return "-"
+        return ""
+
+    overrides_df = None
+    if marker_cols:
+        overrides_df = df.groupby(row_fields, as_index=False)[marker_cols].agg(combine_markers)
+
     # 先依「報表欄位」的組合彙總數值，確保同一個欄位組合 (例如同一家廠商) 只會出現一列，
     # 而不是把資料集裡每一筆原始紀錄 (可能還有藥品名稱、藥證字號等未顯示的欄位差異) 都個別列出來
     df = df.groupby(row_fields, as_index=False)[value_cols].sum()
+
+    if overrides_df is not None:
+        df = df.merge(overrides_df, on=row_fields, how="left")
 
     qty_cols = [c for c in value_cols if "申報量" in c]
     qty_years = sorted(set(c[:4] for c in qty_cols))
@@ -223,7 +258,16 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
             rec_vals[f] = show
         sums = {c: row[c] for c in value_cols}
         sums.update(compute_extra_for_row(sums, top_totals))
-        rows.append({"type": "data", "values": rec_vals, "sums": sums})
+        # 只有明細列 (data) 才會保留「-」或原樣異常文字的顯示標記；
+        # 小計/總計列一律是多筆明細加總而成，即使全部都是 0 也視為正常數字顯示，不套用標記
+        overrides = {}
+        for c in value_cols:
+            mk_col = c + "__mk"
+            if mk_col in row.index:
+                mk = row[mk_col]
+                if mk:
+                    overrides[c] = mk
+        rows.append({"type": "data", "values": rec_vals, "sums": sums, "overrides": overrides})
         for c in first_flags:
             first_flags[c] = False
 
@@ -310,10 +354,13 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
             v = r["values"].get(f, "")
             align = "left" if i == 0 else "center"
             html.append(f"<td style='{td_style}text-align:{align};'>{v}</td>")
+        overrides = r.get("overrides", {})
         for c in display_cols:
             if c in extra_cols:
                 v = r["sums"].get(c, 0)
                 html.append(f"<td style='{td_style}text-align:right;'>{v:.1%}</td>")
+            elif c in overrides:
+                html.append(f"<td style='{td_style}text-align:right;color:#999999;'>{overrides[c]}</td>")
             else:
                 v = r["sums"].get(c, "")
                 html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if v != "" else f"<td style='{td_style}'></td>")
@@ -611,21 +658,30 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
 
     current_row = header_row + 1
     for r in rows:
+        overrides = r.get("overrides", {})
         for i, h in enumerate(headers, 1):
             cell = ws.cell(row=current_row, column=i)
-            if h in value_cols:
+            if h in value_cols and h in overrides:
+                # 明細列若原始資料是「無資料(-)」或異常標記文字 (例如 #N/A、Unknown)，
+                # 保留原樣文字顯示，跟「真正的0」做出區別；小計/總計不受影響，仍是加總後的數字
+                cell.value = overrides[h]
+                cell.alignment = align_r
+                cell.font = Font(name="微軟正黑體", size=11, color="999999")
+            elif h in value_cols:
                 v = r["sums"].get(h, "")
                 cell.value = v
                 cell.number_format = "#,##0"
                 cell.alignment = align_r
+                cell.font = font_bold if r["type"] != "data" else font_norm
             elif h in extra_cols:
                 cell.value = r["sums"].get(h, 0)
                 cell.number_format = "0.0%"
                 cell.alignment = align_r
+                cell.font = font_bold if r["type"] != "data" else font_norm
             else:
                 cell.value = r["values"].get(h, "")
                 cell.alignment = Alignment(horizontal="left" if i == 1 else "center", vertical="center", wrap_text=True)
-            cell.font = font_bold if r["type"] != "data" else font_norm
+                cell.font = font_bold if r["type"] != "data" else font_norm
             cell.border = border_thin
             if r["type"] == "subtotal":
                 cell.fill = subtotal_fill
