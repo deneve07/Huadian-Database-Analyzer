@@ -629,6 +629,12 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
         header=0, footer=0,
     )
 
+    # 頁尾：左下角顯示日期＋時間、右下角顯示頁碼。&D/&T/&P 是 Excel 內建的頁首頁尾
+    # 欄位代碼，會在「開啟檔案時」自動代入當下日期時間與實際頁碼 (而非產出當下寫死的值)，
+    # 實際顯示格式 (例如「2026年7月23日 09:59」) 依 Excel 當時的地區/語言設定而定。
+    ws.oddFooter.left.text = "&D &T"
+    ws.oddFooter.right.text = "第 &P 頁"
+
     header_fill = PatternFill(start_color="00695C", end_color="00695C", fill_type="solid")
     subtotal_fill = PatternFill(start_color="E0F2F1", end_color="E0F2F1", fill_type="solid")
     total_fill = PatternFill(start_color="B2DFDB", end_color="B2DFDB", fill_type="solid")
