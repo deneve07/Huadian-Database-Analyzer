@@ -26,6 +26,7 @@ import streamlit.components.v1 as components
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.page import PageMargins
 
 try:
     from streamlit_sortables import sort_items
@@ -620,6 +621,14 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.print_options.horizontalCentered = True
 
+    # 列印邊界上下左右統一 1.2 公分 (openpyxl 的 PageMargins 單位是英吋，1.2cm ÷ 2.54 ≈ 0.4724 吋)
+    margin_cm_in_inch = 1.2 / 2.54
+    ws.page_margins = PageMargins(
+        left=margin_cm_in_inch, right=margin_cm_in_inch,
+        top=margin_cm_in_inch, bottom=margin_cm_in_inch,
+        header=0, footer=0,
+    )
+
     header_fill = PatternFill(start_color="00695C", end_color="00695C", fill_type="solid")
     subtotal_fill = PatternFill(start_color="E0F2F1", end_color="E0F2F1", fill_type="solid")
     total_fill = PatternFill(start_color="B2DFDB", end_color="B2DFDB", fill_type="solid")
@@ -715,7 +724,7 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
                 cell.fill = subtotal_fill
             elif r["type"] == "total":
                 cell.fill = total_fill
-        ws.row_dimensions[current_row].height = 30
+        ws.row_dimensions[current_row].height = 42
         current_row += 1
 
     for col_idx, col_name in enumerate(headers, 1):
