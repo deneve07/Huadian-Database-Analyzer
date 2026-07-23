@@ -19,6 +19,12 @@ import io
 import os
 import json
 import base64
+from datetime import datetime
+try:
+    from zoneinfo import ZoneInfo
+    TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+except Exception:
+    TAIPEI_TZ = None
 import pandas as pd
 import numpy as np
 import streamlit as st
@@ -349,6 +355,15 @@ def build_nested_rows(df: pd.DataFrame, row_fields: list, subtotal_fields: list,
     return rows, pct_cols, growth_cols
 
 
+def get_report_timestamp() -> str:
+    """回傳報表產出當下的時間戳記字串 (24小時制、不含AM/PM)，格式例如 2026/7/23 10:28。
+    刻意在產出當下就寫死成固定文字，而不是用 Excel 的 &D/&T 動態欄位代碼，
+    因為動態代碼的實際顯示格式會依開啟檔案當下的 Excel 地區/語言設定而不同 (可能跑出
+    12小時制加 AM/PM)，寫死文字才能保證不管誰在哪裡打開都是同一種格式。"""
+    now = datetime.now(TAIPEI_TZ) if TAIPEI_TZ else datetime.now()
+    return f"{now.year}/{now.month}/{now.day} {now.hour:02d}:{now.minute:02d}"
+
+
 def safe_numeric(v):
     """安全轉換為數字，供報表格式化前使用。萬一因為未預期的資料狀況 (例如
     來源檔案有特殊欄位命名或型別問題) 讓某個儲存格的值不是單純的數字，
@@ -432,7 +447,12 @@ def build_html_table(rows, row_fields, value_cols, pct_cols, growth_cols, report
                     html.append(f"<td style='{td_style}text-align:right;'>{v:,.0f}</td>" if ok else f"<td style='{td_style}text-align:right;color:#999999;'>{v}</td>")
         html.append("</tr>")
 
-    html.append("</table></div></div>")
+    html.append("</table></div>")
+    footer_style = f"display:flex;justify-content:space-between;margin-top:8px;font-size:12px;color:#333333;font-family:{font_family};"
+    html.append(
+        f"<div style='{footer_style}'><span>{get_report_timestamp()}</span><span>第 1 頁</span></div>"
+    )
+    html.append("</div>")
     return "".join(html)
 
 
@@ -629,11 +649,17 @@ def generate_excel_bytes(rows, row_fields, value_cols, pct_cols, growth_cols, re
         header=0, footer=0,
     )
 
-    # 頁尾：左下角顯示日期＋時間、右下角顯示頁碼。&D/&T/&P 是 Excel 內建的頁首頁尾
-    # 欄位代碼，會在「開啟檔案時」自動代入當下日期時間與實際頁碼 (而非產出當下寫死的值)，
-    # 實際顯示格式 (例如「2026年7月23日 09:59」) 依 Excel 當時的地區/語言設定而定。
-    ws.oddFooter.left.text = "&D &T"
-    ws.oddFooter.right.text = "第 &P 頁"
+    # 頁尾：左下角顯示日期＋時間 (報表產出當下的固定文字，24小時制、不含AM/PM，
+    # 不用 Excel 的 &D/&T 動態欄位代碼，因為那會依開啟者當下的 Excel 地區設定顯示成
+    # 不同格式，例如跑出12小時制加AM/PM)；右下角顯示頁碼 (&P 是 Excel 內建的頁碼代碼，
+    # 這個會自動對應實際列印頁數，維持動態即可)。
+    # &"微軟正黑體,標準"&11 是 Excel 頁首頁尾專用的字型控制代碼，讓頁尾文字跟表格內容
+    # 使用同一種字型 (微軟正黑體)、同樣大小 (11号)，視覺上一致。注意：字型大小代碼 &11
+    # 後面刻意保留一個空格，避免緊接著的日期文字開頭數字 (例如"2026") 被 Excel 誤判
+    # 合併成 "&112026" (當成字型大小112026號去解析)，導致文字顯示被吃掉一部分。
+    footer_font_code = '&"微軟正黑體,標準"&11 '
+    ws.oddFooter.left.text = f"{footer_font_code}{get_report_timestamp()}"
+    ws.oddFooter.right.text = f"{footer_font_code}第 &P 頁"
 
     header_fill = PatternFill(start_color="00695C", end_color="00695C", fill_type="solid")
     subtotal_fill = PatternFill(start_color="E0F2F1", end_color="E0F2F1", fill_type="solid")
