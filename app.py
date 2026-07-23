@@ -825,7 +825,17 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                 avail += [c for c in dim_cols_all if c not in known]
                 st.session_state[state_key] = {"available": avail, "selected": sel}
 
-            if HAS_SORTABLES:
+            # 拖曳排序元件 (streamlit-sortables) 是第三方套件，偶爾會在拖曳當下丟出
+            # 「Minified React error #185」(該元件內部的無限更新循環，屬於它自己的
+            # 相容性問題，並非資料或計算邏輯出錯)。提供一個手動切換開關，萬一拖曳
+            # 元件又出現這個錯誤，可以立即改用不會壞掉的下拉式勾選繼續操作，
+            # 不必等待這個第三方套件修好。勾選的順序即為欄位排列順序。
+            use_fallback = st.checkbox(
+                "⚠️ 拖曳排序出現錯誤時，改用勾選方式選擇欄位 (勾選順序＝欄位順序)",
+                value=False, key=f"use_fallback_{dnd_key}",
+            )
+
+            if HAS_SORTABLES and not use_fallback:
                 containers = sort_items(
                     [
                         {"header": "📋 可用欄位 (拖曳到下方使用)", "items": st.session_state[state_key]["available"]},
@@ -838,6 +848,20 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                 if containers and len(containers) > 1:
                     st.session_state[state_key] = {"available": containers[0]["items"], "selected": containers[1]["items"]}
                 row_fields = st.session_state[state_key]["selected"]
+            elif HAS_SORTABLES:
+                # 使用者主動切換成勾選模式：以 multiselect 取代拖曳，選取順序即欄位順序，
+                # 並同步回 session_state，切回拖曳模式時能延續同樣的欄位與順序
+                sel = st.multiselect(
+                    "選擇報表欄位 (依勾選順序排列)",
+                    options=dim_cols_all,
+                    default=st.session_state[state_key]["selected"],
+                    key=f"fallback_fields_{dnd_key}",
+                )
+                st.session_state[state_key] = {
+                    "available": [c for c in dim_cols_all if c not in sel],
+                    "selected": sel,
+                }
+                row_fields = sel
             else:
                 st.error("尚未安裝 streamlit-sortables 套件，暫以勾選方式呈現，請於 requirements.txt 加入 streamlit-sortables 後重新部署即可拖曳。")
                 row_fields = st.multiselect("選擇報表欄位", options=dim_cols_all, key=f"fallback_fields_{ana_choice}")
