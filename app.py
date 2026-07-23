@@ -440,12 +440,9 @@ CAPTURE_HTML_TEMPLATE = """
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-<div style="display:flex; gap:10px;">
-  <button id="export-png-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
-    border-radius:6px;font-size:14px;cursor:pointer;">🖼️ 匯出 PNG 圖片</button>
-  <button id="export-pdf-btn-{uid}" style="flex:1;background-color:#00695C;color:white;border:none;padding:10px 12px;
-    border-radius:6px;font-size:14px;cursor:pointer;">📕 匯出 PDF</button>
+<div style="text-align:center;">
+  <button id="export-png-btn-{uid}" style="background-color:#00695C;color:white;border:none;padding:10px 20px;
+    border-radius:6px;font-size:14px;cursor:pointer;width:100%;">🖼️ 匯出 PNG 圖片</button>
 </div>
 <div id="result-area-{uid}" style="margin-top:10px;font-size:13px;color:#00695C;text-align:center;"></div>
 <div id="capture-wrap-{uid}" style="position:absolute; left:-99999px; top:0; width:max-content;">{table_html}</div>
@@ -453,15 +450,11 @@ CAPTURE_HTML_TEMPLATE = """
 (function() {{
     const resultArea = document.getElementById('result-area-{uid}');
     const pngBtn = document.getElementById('export-png-btn-{uid}');
-    const pdfBtn = document.getElementById('export-pdf-btn-{uid}');
     let busy = false;
 
     async function captureCanvas() {{
         const target = document.getElementById('capture-wrap-{uid}');
-        // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體。
-        // 注意：PDF 之所以不直接用 jsPDF 內建字型畫文字，是因為 jsPDF 內建字型 (Helvetica 等)
-        // 完全不支援中文字，會顯示為亂碼；改用瀏覽器渲染好的截圖，中文顯示才會正確、且跟
-        // 網頁預覽、PNG、Excel 三者字型 (微軟正黑體/Noto Sans TC) 保持一致。
+        // 等待字型完全載入後才擷取，避免在字型還沒套用完成時就截圖，導致回退成瀏覽器預設的 serif 字體
         if (document.fonts && document.fonts.ready) {{
             await document.fonts.ready;
         }}
@@ -515,7 +508,7 @@ CAPTURE_HTML_TEMPLATE = """
 
     pngBtn.addEventListener('click', async function() {{
         if (busy) return;
-        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
+        busy = true; pngBtn.disabled = true;
         resultArea.innerText = '🔄 產生圖片中，請稍候...';
         try {{
             const canvas = await captureCanvas();
@@ -525,122 +518,7 @@ CAPTURE_HTML_TEMPLATE = """
         }} catch (err) {{
             resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
         }} finally {{
-            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
-        }}
-    }});
-
-    async function renderPaginatedPdf(pdf) {{
-        // 依實際「列」的高度分頁，而不是把整張截圖硬塞縮小成一頁：
-        // 1. 量測每一列的實際高度，抓出「一頁最多能放幾列」，絕不會把某一列從中間切斷
-        // 2. 每一頁都用「跟原表相同的欄寬」+ 相同的擷取寬度，確保跨頁欄寬、字體大小完全一致
-        // 3. 每一頁都重複表頭與報表標題 (呼應 Excel 版「每頁重複標題列」的需求)
-        const table = document.querySelector('#capture-wrap-{uid} #report-table');
-        if (!table) {{
-            throw new Error('找不到報表表格 (#report-table)');
-        }}
-        const allRows = Array.from(table.rows);
-        const headerRow = allRows[0];
-        const dataRows = allRows.slice(1);
-        const colWidths = Array.from(headerRow.cells).map(function(td) {{ return td.getBoundingClientRect().width; }});
-        const tableWidthPx = table.getBoundingClientRect().width;
-
-        const pageWidth = pdf.internal.pageSize.getWidth();
-        const pageHeight = pdf.internal.pageSize.getHeight();
-        const margin = 10; // mm
-        const maxWidth = pageWidth - margin * 2;
-        const maxHeight = pageHeight - margin * 2;
-
-        const scale = maxWidth / tableWidthPx; // mm / px，跨頁統一，確保欄寬與字級一致
-        const titleHeightPx = 40; // 每頁標題預留高度 (px)，對應下方重建標題的樣式
-        const headerHeightPx = headerRow.getBoundingClientRect().height;
-        const pageCapacityPx = (maxHeight / scale) - titleHeightPx;
-
-        // 依累計高度切出頁次分界；每頁固定扣掉「標題 + 表頭」的高度後才是資料列可用空間
-        const pages = [];
-        let currentRows = [];
-        let currentHeight = headerHeightPx;
-        for (const row of dataRows) {{
-            const h = row.getBoundingClientRect().height;
-            if (currentRows.length > 0 && currentHeight + h > pageCapacityPx) {{
-                pages.push(currentRows);
-                currentRows = [];
-                currentHeight = headerHeightPx;
-            }}
-            currentRows.push(row);
-            currentHeight += h;
-        }}
-        if (currentRows.length > 0 || pages.length === 0) {{
-            pages.push(currentRows);
-        }}
-
-        for (let i = 0; i < pages.length; i++) {{
-            const wrapper = document.createElement('div');
-            wrapper.style.cssText = "position:absolute; left:-99999px; top:0; width:max-content; background:#fff; font-family:{font_family_js};";
-
-            const titleEl = document.createElement('h3');
-            titleEl.style.cssText = "text-align:center; color:#004D40; margin:0 0 10px 0; font-family:{font_family_js};";
-            titleEl.textContent = '{filename}';
-            wrapper.appendChild(titleEl);
-
-            const pageTable = document.createElement('table');
-            pageTable.style.cssText = table.style.cssText;
-            pageTable.style.tableLayout = 'fixed';
-            const colgroup = document.createElement('colgroup');
-            colWidths.forEach(function(w) {{
-                const col = document.createElement('col');
-                col.style.width = w + 'px';
-                colgroup.appendChild(col);
-            }});
-            pageTable.appendChild(colgroup);
-            pageTable.appendChild(headerRow.cloneNode(true));
-            pages[i].forEach(function(row) {{ pageTable.appendChild(row.cloneNode(true)); }});
-            wrapper.appendChild(pageTable);
-
-            document.body.appendChild(wrapper);
-            if (document.fonts && document.fonts.ready) {{
-                await document.fonts.ready;
-            }}
-            const canvas = await html2canvas(wrapper, {{
-                scale: 4,
-                backgroundColor: '#ffffff',
-                windowWidth: tableWidthPx,
-                windowHeight: wrapper.scrollHeight,
-                width: tableWidthPx,
-                height: wrapper.scrollHeight,
-                useCORS: true
-            }});
-            document.body.removeChild(wrapper);
-
-            const imgData = canvas.toDataURL('image/jpeg', 0.92);
-            const drawWidth = maxWidth;
-            const drawHeight = canvas.height * (drawWidth / canvas.width);
-            if (i > 0) {{ pdf.addPage(); }}
-            pdf.addImage(imgData, 'JPEG', margin, margin, drawWidth, drawHeight, undefined, 'MEDIUM');
-        }}
-    }}
-
-    pdfBtn.addEventListener('click', async function() {{
-        if (busy) return;
-        busy = true; pngBtn.disabled = true; pdfBtn.disabled = true;
-        resultArea.innerText = '🔄 產生 PDF 中，請稍候...';
-        try {{
-            if (typeof window.jspdf === 'undefined') {{
-                throw new Error('jsPDF 尚未載入完成，請確認網路連線後再試一次');
-            }}
-            const {{ jsPDF }} = window.jspdf;
-            const pdf = new jsPDF({{
-                orientation: '{pdf_orientation}',
-                unit: 'mm',
-                format: 'a4',
-                compress: true
-            }});
-            await renderPaginatedPdf(pdf);
-            const blob = pdf.output('blob');
-            await shareOrDownload(blob, '{filename}.pdf', 'application/pdf');
-        }} catch (err) {{
-            resultArea.innerText = '❌ 匯出失敗：' + (err && err.message ? err.message : err);
-        }} finally {{
-            busy = false; pngBtn.disabled = false; pdfBtn.disabled = false;
+            busy = false; pngBtn.disabled = false;
         }}
     }});
 }})();
@@ -1052,7 +930,7 @@ if ana_choice in ANALYSIS_TO_SOURCE:
                         # Req 6：不再顯示第二份預覽，表格離屏渲染僅供 html2canvas 擷取；
                         # Req 5：windowWidth/Height 依內容實際尺寸擷取，避免手機/小視窗被裁切
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{safe_dnd_key}", pdf_orientation="landscape", font_family_js=HTML_FONT_FAMILY),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_title, uid=f"pivot_{safe_dnd_key}"),
                             height=90,
                         )
                 elif not value_cols:
@@ -1170,6 +1048,6 @@ else:
                         render_excel_share(excel_bytes, report_filename, uid="presc")
                     with dl_col2:
                         components.html(
-                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc", pdf_orientation="portrait", font_family_js=HTML_FONT_FAMILY),
+                            CAPTURE_HTML_TEMPLATE.format(table_html=table_html, filename=report_filename, uid="presc"),
                             height=90,
                         )
